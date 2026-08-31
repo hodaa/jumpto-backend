@@ -1,0 +1,88 @@
+[project]
+name = "jumpto-backend"
+version = "0.1.0"
+description = "JumpTo Backend API - YouTube Keyword Timestamp Finder"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi==0.115.0",
+    "uvicorn[standard]==0.32.0",
+    "sqlalchemy==2.0.36",
+    "alembic==1.14.0",
+    "pydantic==2.10.1",
+    "pydantic-settings==2.6.1",
+    "celery==5.4.0",
+    "redis==5.2.1",
+    "httpx==0.28.1",
+    "python-dotenv==1.0.1",
+    "structlog==24.4.0",
+    "psycopg2-binary==2.9.10",
+    "asyncpg==0.31.0",
+    "python-multipart==0.0.18",
+    "yt-dlp==2026.8.19",
+    "greenlet==3.1.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.4",
+    "pytest-asyncio==0.23.7",
+    "pytest-cov==6.0.0",
+    "pytest-mock==3.14.0",
+    "faker==33.1.0",
+    "httpx==0.28.1",
+    "black==24.10.0",
+    "ruff==0.8.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*", "alembic*"]
+exclude = ["tests*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["tests/*", "*/conftest.py"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+precision = 2
+
+[tool.black]
+line-length = 100
+target-version = ['py312']
+include = '\.pyi?$'
+exclude = '''
+/(
+    \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | _build
+  | buck-out
+  | build
+  | dist
+)/
+'''
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B", "C4", "SIM", "TID", "PTH", "PYI"]
+ignore = ["E501", "B008"]

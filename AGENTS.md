@@ -74,6 +74,25 @@ Whenever implementing a new backend feature:
 - Do not duplicate package-specific rules here; keep them in the relevant
   package `AGENTS.md` so they stay close to the code they govern.
 
+## Definition of done
+
+Never report a task as "done" (and never play the completion sound) until ALL
+of the following are true for the changed behavior, end to end from the user
+through the backend to the database:
+
+- Backend unit + integration tests pass with coverage >= 80%, and ruff/black are clean.
+- Frontend tests pass with coverage >= 80%, and tsc/ESLint/Prettier/build are clean.
+- Any schema change is captured in an Alembic migration (not just `create_all`),
+  the migration is applied to the dev DB, and the running services (API server
+  and Celery worker) are restarted to pick up the new code.
+- A live end-to-end check succeeds for the changed flow: a real API request is
+  sent, it flows through the worker to the database, and the result is verified
+  back (e.g. a row's new column is populated and a search returns the expected
+  status/results).
+
+If any layer is untested or unverified, say it is "in progress" / report the
+remaining work instead of saying "done".
+
 ## Completion notification
 
 When a task is finished, notify the user with a sound (macOS) using a shell
@@ -96,3 +115,32 @@ Play it once, right after reporting the task as complete.
 - Error boundaries
 - Unit test coverage >80%
 - Component tests with React Testing Library
+
+## Task completion rule (anti-"half-done" rule)
+
+Do NOT report a task as done or move on until the ENTIRE feature is finished and
+verified. A feature is NOT complete when the main files are written — it is
+complete only when every supporting piece is in place and every check passes.
+
+Before reporting "done", walk this checklist and address anything missing:
+
+1. ALL files for the feature exist and are wired together (components, hooks,
+   styles/CSS, i18n copy in BOTH `en` and `ar`, types, imports, props, refs).
+   A component is not "added" until it is styled and visible, not just present
+   in the DOM.
+2. Existing tests broken by the change are updated, and new tests cover the new
+   behavior (including error/edge cases).
+3. The full verification passes end-to-end:
+   - `tsc --noEmit` clean
+   - ESLint clean
+   - Prettier clean
+   - `npm run build` passes
+   - full test suite passes with coverage >= 80%
+   - backend suite / ruff / black still green if backend code changed
+4. A live/manual check confirms the feature actually renders and works in the
+   running app (not just unit tests).
+5. Only report done once every item above is green. Otherwise report it as
+   "in progress" and list the exact remaining steps.
+
+Stopping mid-implementation to answer a question is fine; just say the feature
+is "in progress" and resume it to completion before claiming it is done.
