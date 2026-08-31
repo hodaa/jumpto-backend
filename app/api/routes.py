@@ -25,6 +25,7 @@ from app.schemas import (
 )
 from app.services import JobService, SearchService, languages_match, validate_youtube_url
 from app.tasks.transcription import download_and_transcribe
+from app.core.database import async_session_factory
 
 router = APIRouter()
 
@@ -77,6 +78,7 @@ async def search(
     video_repo: VideoRepository = Depends(get_video_repo),
     search_service: SearchService = Depends(get_search_service),
     job_service: JobService = Depends(get_job_service),
+    session: AsyncSession = Depends(get_db_session)
 ) -> SearchResponse:
     """
     Search for a keyword in a YouTube video transcript (cache-first).
@@ -98,10 +100,11 @@ async def search(
 
     if not video:
         video = await _get_or_create_video(
-            video_repo, str(request.youtube_url), youtube_info.video_id
+            video_repo, str(request.youtube_url), youtube_info.video_id, str(request.language.value)
         )
 
     job = await job_service.create_or_get_job(video.id)
+    await session.commit()
     _dispatch_pipeline(job.id, youtube_info.video_id, str(request.youtube_url))
     response = SearchResponseProcessing(status="processing", job_id=job.id, video_id=video.id)
     return JSONResponse(
@@ -180,10 +183,11 @@ async def _get_or_create_video(
     video_repo: VideoRepository,
     youtube_url: str,
     youtube_id: str,
+    language: str = "en",
 ) -> Video:
     """Create a video record, resolving a concurrent-creation race."""
     try:
-        return await video_repo.create(youtube_url=youtube_url, video_id=youtube_id)
+        return await video_repo.create(youtube_url=youtube_url, video_id=youtube_id, language=language)
     except IntegrityError:
         await video_repo.session.rollback()
         video = await video_repo.get_by_video_id(youtube_id)
