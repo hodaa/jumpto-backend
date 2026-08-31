@@ -7,6 +7,7 @@ from app.providers.transcript import (
     TranscriptData,
     TranscriptProvider,
     TranscriptWordData,
+    YouTubeCaptionTranscriptProvider,
     get_transcript_provider,
 )
 
@@ -17,6 +18,7 @@ __all__ = [
     "TranscriptData",
     "TranscriptProvider",
     "TranscriptWordData",
+    "YouTubeCaptionTranscriptProvider",
     "get_media_info",
     "get_transcript_provider",
 ]

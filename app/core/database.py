@@ -1,7 +1,9 @@
 """Database configuration and session management."""
 
+import ssl
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from urllib.parse import parse_qs, urlparse, urlunparse
 
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -19,13 +21,56 @@ logger = get_logger(__name__)
 
 settings = get_settings()
 
+_SSL_MODE_MAP: dict[str, ssl.VerifyMode | bool] = {
+    "disable": False,
+    "allow": False,
+    "prefer": False,
+    "require": True,
+    "verify-ca": ssl.CERT_REQUIRED,
+    "verify-full": ssl.CERT_REQUIRED,
+}
+
+
+def _ssl_context_for_mode(sslmode: str) -> ssl.SSLContext | bool:
+    """Translate a libpq sslmode to an asyncpg-compatible ssl value."""
+    value = _SSL_MODE_MAP.get(sslmode, ssl.CERT_REQUIRED)
+    if isinstance(value, bool):
+        return value
+    context = ssl.create_default_context()
+    context.verify_mode = value
+    return context
+
+
+def build_async_database_url(database_url: str) -> tuple[str, dict[str, object]]:
+    """Translate a libpq URL to an asyncpg URL plus ssl connect args."""
+    parsed = urlparse(database_url)
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    sslmode = query.pop("sslmode", ["prefer"])[0].lower()
+    async_url = urlunparse(parsed._replace(query="")).replace(
+        "postgresql://", "postgresql+asyncpg://"
+    )
+
+    ssl_value = _ssl_context_for_mode(sslmode)
+    connect_args = {} if ssl_value is False else {"ssl": ssl_value}
+    return async_url, connect_args
+
+
+def _build_engine(database_url: str, echo: bool) -> AsyncEngine:
+    """Build an async engine, translating sslmode to asyncpg's ssl param."""
+    async_url, connect_args = build_async_database_url(database_url)
+
+    kwargs: dict[str, object] = {"echo": echo, "poolclass": NullPool}
+    if connect_args:
+        kwargs["connect_args"] = connect_args
+    return create_async_engine(async_url, **kwargs)
+
+
 # NullPool: every session gets a fresh connection tied to the current event
 # loop. This keeps forked Celery worker processes (which inherit the engine
 # from the API parent) free from cross-loop connection bugs.
-engine: AsyncEngine = create_async_engine(
-    settings.database_url.replace("postgresql://", "postgresql+asyncpg://"),
-    echo=settings.is_development,
-    poolclass=NullPool,
+engine: AsyncEngine = _build_engine(
+    settings.database_url,
+    settings.is_development,
 )
 
 # Create async session factory

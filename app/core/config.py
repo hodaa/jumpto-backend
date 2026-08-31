@@ -1,9 +1,23 @@
 """Application configuration settings."""
 
-from functools import lru_cache
+from __future__ import annotations
 
-from pydantic import Field
+from functools import lru_cache
+from typing import Annotated
+
+from pydantic import BeforeValidator, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _coerce_bool(value: str | bool | int) -> bool:
+    """Coerce empty-string / falsy env values to a valid bool."""
+    if isinstance(value, str):
+        value = value.strip().lower()
+        if value in ("", "0", "false", "no"):
+            return False
+        if value in ("1", "true", "yes"):
+            return True
+    return bool(value)
 
 
 class Settings(BaseSettings):
@@ -47,11 +61,10 @@ class Settings(BaseSettings):
     )
 
     # External calls
-    jumpto_live_external_calls: bool = Field(
+    jumpto_live_external_calls: Annotated[bool, BeforeValidator(_coerce_bool)] = Field(
         default=False,
         description="Enable live external API calls (yt-dlp, Assembly.ai)",
     )
-
     # Transcript mode
     jumpto_transcript_mode: str = Field(
         default="real",

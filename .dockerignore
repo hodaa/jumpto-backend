@@ -1,0 +1,11 @@
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+.git
+.env
+tests
+jumpto_backend.egg-info
+scripts
+npm-debug.log

@@ -5,11 +5,17 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.config import get_settings
 from app.core.database import async_session_factory
 from app.core.exceptions import ExternalServiceError
 from app.core.logging import get_logger
 from app.models import TranscriptWord
-from app.providers import TranscriptData, get_media_info, get_transcript_provider
+from app.providers import (
+    TranscriptData,
+    YouTubeCaptionTranscriptProvider,
+    get_media_info,
+    get_transcript_provider,
+)
 from app.repositories import JobRepository, TranscriptWordRepository, VideoRepository
 from app.schemas import JobStatus
 from app.services.job import JobService
@@ -100,6 +106,11 @@ async def _store_transcript(
 
 async def _fetch_transcript_with_retry(youtube_url: str) -> TranscriptData:
     """Fetch a transcript, retrying transient external failures."""
+    if _live_pipeline_enabled():
+        try:
+            return await YouTubeCaptionTranscriptProvider().fetch(youtube_url)
+        except ExternalServiceError:
+            logger.info("Captions fast-path unavailable; falling back to audio transcription")
     provider = get_transcript_provider()
     last_error: Exception | None = None
     for attempt in range(_RETRY_ATTEMPTS):
@@ -113,6 +124,12 @@ async def _fetch_transcript_with_retry(youtube_url: str) -> TranscriptData:
     if last_error:
         raise last_error
     return await provider.fetch(youtube_url)  # pragma: no cover
+
+
+def _live_pipeline_enabled() -> bool:
+    """Return whether the live external transcription pipeline is active."""
+    settings = get_settings()
+    return settings.jumpto_live_external_calls and settings.jumpto_transcript_mode.lower() != "fake"
 
 
 def _user_safe_message(exc: Exception) -> str:

@@ -7,8 +7,18 @@ from sqlalchemy.exc import IntegrityError
 
 from app.core.exceptions import ExternalServiceError
 from app.models import Job, TranscriptWord, Video
-from app.providers import FakeTranscriptProvider, MediaInfo, TranscriptData, TranscriptProvider
-from app.tasks.transcription import _EXTERNAL_FAILURE, run_pipeline
+from app.providers import (
+    FakeTranscriptProvider,
+    MediaInfo,
+    TranscriptData,
+    TranscriptProvider,
+    TranscriptWordData,
+)
+from app.tasks.transcription import (
+    _EXTERNAL_FAILURE,
+    _fetch_transcript_with_retry,
+    run_pipeline,
+)
 from tests.conftest import TestAsyncSessionFactory
 
 _FAKE_URL = "https://www.youtube.com/watch?v=pipeline123"
@@ -192,3 +202,59 @@ async def test_pipeline_duplicate_words_constraint_prevents_corruption() -> None
         with pytest.raises(IntegrityError):
             await session.flush()
         await session.rollback()
+
+
+class TestCaptionFastPath:
+    """Tests for the caption-first transcript fetch fallback."""
+
+    def _transcript(self) -> TranscriptData:
+        return TranscriptData(
+            language="en",
+            text="hello world",
+            words=[TranscriptWordData(word="hello", start_time=0.0, end_time=0.5)],
+        )
+
+    @pytest.mark.asyncio
+    async def test_captions_used_first_when_live(self, monkeypatch) -> None:
+        from unittest.mock import AsyncMock
+
+        transcript = self._transcript()
+        caption = AsyncMock()
+        caption.fetch = AsyncMock(return_value=transcript)
+        assembly = AsyncMock()
+
+        monkeypatch.setattr("app.tasks.transcription._live_pipeline_enabled", lambda: True)
+        monkeypatch.setattr(
+            "app.tasks.transcription.YouTubeCaptionTranscriptProvider", lambda: caption
+        )
+        monkeypatch.setattr("app.tasks.transcription.get_transcript_provider", lambda: assembly)
+
+        result = await _fetch_transcript_with_retry("https://www.youtube.com/watch?v=x123")
+
+        assert result is transcript
+        caption.fetch.assert_awaited_once()
+        assembly.fetch.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_assembly_when_no_captions(self, monkeypatch) -> None:
+        from unittest.mock import AsyncMock
+
+        caption = AsyncMock()
+        caption.fetch = AsyncMock(
+            side_effect=ExternalServiceError("no captions", service="youtube-captions")
+        )
+        assembly_transcript = self._transcript()
+        assembly = AsyncMock()
+        assembly.fetch = AsyncMock(return_value=assembly_transcript)
+
+        monkeypatch.setattr("app.tasks.transcription._live_pipeline_enabled", lambda: True)
+        monkeypatch.setattr(
+            "app.tasks.transcription.YouTubeCaptionTranscriptProvider", lambda: caption
+        )
+        monkeypatch.setattr("app.tasks.transcription.get_transcript_provider", lambda: assembly)
+
+        result = await _fetch_transcript_with_retry("https://www.youtube.com/watch?v=x123")
+
+        assert result is assembly_transcript
+        caption.fetch.assert_awaited_once()
+        assembly.fetch.assert_awaited_once()

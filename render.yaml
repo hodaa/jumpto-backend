@@ -1,0 +1,27 @@
+# Render Blueprint for the JumpTo transcription worker.
+# The FastAPI API stays on Vercel; this runs the Celery worker that
+# consumes transcription jobs from the shared Redis broker.
+#
+# NOTE: Vercel and Render must share the SAME Redis broker. Render's
+# managed Redis is private (not reachable from Vercel), so use an
+# internet-reachable Redis (e.g. Upstash free tier) and set REDIS_URL
+# identically on BOTH Vercel and Render.
+services:
+  - type: worker
+    name: jumpTo-worker
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: DATABASE_URL
+        sync: false # set in Render dashboard to your Neon connection string
+      - key: REDIS_URL
+        sync: false # set in Render dashboard to your shared (Upstash) Redis URL
+      - key: ASSEMBLY_API_KEY
+        sync: false # your Assembly.ai API key
+      - key: ENVIRONMENT
+        value: production
+      - key: JUMPTO_LIVE_EXTERNAL_CALLS
+        value: "true"
+      - key: JUMPTO_TRANSCRIPT_MODE
+        value: real

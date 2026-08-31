@@ -10,7 +10,13 @@ from app.providers.media import get_media_info
 from app.providers.transcript import (
     AssemblyTranscriptProvider,
     FakeTranscriptProvider,
+    TranscriptData,
+    YouTubeCaptionTranscriptProvider,
+    _caption_language,
     _parse_assembly_transcript,
+    _parse_vtt,
+    _preferred_vtt_file,
+    _select_caption_language,
     get_transcript_provider,
 )
 
@@ -249,3 +255,139 @@ class TestAssemblyDownloadAudio:
 
         with pytest.raises(ExternalServiceError):
             transcript_module._download_audio("https://youtu.be/abcde12345")
+
+
+class TestCaptionSelection:
+    """Tests for the caption file selection across downloaded tracks."""
+
+    @staticmethod
+    def _paths(names: list[str]) -> list:
+        from pathlib import Path
+
+        return [Path(name) for name in names]
+
+    def test_prefers_supported_language_file(self) -> None:
+        files = self._paths(["video.de.vtt", "video.en.vtt", "video.fr.vtt"])
+
+        chosen = _preferred_vtt_file(files)
+
+        assert chosen.name == "video.en.vtt"
+
+    def test_prefers_en_over_ar(self) -> None:
+        files = self._paths(["video.ar.vtt", "video.en.vtt"])
+
+        chosen = _preferred_vtt_file(files)
+
+        assert chosen.name == "video.en.vtt"
+
+    def test_falls_back_to_any_available_language(self) -> None:
+        files = self._paths(["video.de.vtt"])
+
+        chosen = _preferred_vtt_file(files)
+
+        assert chosen.name == "video.de.vtt"
+
+    def test_reduces_original_language_files(self) -> None:
+        assert _caption_language("video.ar-orig.vtt") == "ar"
+
+    def test_plain_language_file_code(self) -> None:
+        assert _caption_language("video.en.vtt") == "en"
+
+
+class TestCaptionLanguageSelection:
+    """Tests for the single caption-language selection."""
+
+    def test_prefers_original_supported_language(self) -> None:
+        info = {
+            "automatic_captions": {"en": [], "ar": [], "ar-orig": []},
+            "subtitles": {},
+        }
+
+        assert _select_caption_language(info, ("en", "ar")) == "ar"
+
+    def test_prefers_en_plain_when_no_original(self) -> None:
+        info = {"automatic_captions": {"ar": [], "en": []}, "subtitles": {}}
+
+        assert _select_caption_language(info, ("en", "ar")) == "en"
+
+    def test_matches_supported_regional_variant(self) -> None:
+        info = {"automatic_captions": {"de": [], "en-US": []}, "subtitles": {}}
+
+        assert _select_caption_language(info, ("en", "ar")) == "en"
+
+    def test_raises_without_caption_tracks(self) -> None:
+        info = {"automatic_captions": {}, "subtitles": {}}
+
+        with pytest.raises(ExternalServiceError):
+            _select_caption_language(info, ("en", "ar"))
+
+
+class TestCaptionParser:
+    """Tests for VTT caption parsing into timestamped words."""
+
+    def test_parses_inline_word_timestamps(self) -> None:
+        vtt = (
+            "WEBVTT\n"
+            "Kind: captions\n\n"
+            "00:00:01.199 --> 00:00:03.389 align:start\n"
+            "hello<00:00:01.480><c> world</c><00:00:02.240><c> from</c>\n"
+        )
+
+        transcript = _parse_vtt(vtt, "en")
+
+        assert transcript.language == "en"
+        assert [w.word for w in transcript.words] == ["world", "from"]
+        assert transcript.words[0].start_time == pytest.approx(1.48)
+        assert transcript.words[1].start_time == pytest.approx(2.24)
+        assert transcript.words[0].end_time == pytest.approx(2.24)
+        assert transcript.text == "world from"
+
+    def test_ignores_plain_cue_lines_without_word_timing(self) -> None:
+        vtt = "00:00:00.000 --> 00:00:01.000\nplain line only\n"
+
+        transcript = _parse_vtt(vtt, "en")
+
+        assert transcript.words == []
+
+    def test_last_word_gets_a_fallback_end_time(self) -> None:
+        vtt = "00:00:00.000 --> 00:00:05.000\n<00:00:01.000><c> solo</c>\n"
+
+        transcript = _parse_vtt(vtt, "en")
+
+        assert transcript.words[0].end_time == pytest.approx(1.3)
+
+    def test_language_is_reduced_to_base(self) -> None:
+        transcript = _parse_vtt("placeholder", "ar-orig")
+
+        assert transcript.language == "ar"
+
+
+class TestYouTubeCaptionFetcher:
+    """Tests for the YouTube caption transcript provider."""
+
+    @pytest.mark.asyncio
+    async def test_fetch_returns_parsed_transcript(self, monkeypatch) -> None:
+        provider = YouTubeCaptionTranscriptProvider()
+        monkeypatch.setattr(
+            "app.providers.transcript._download_caption",
+            lambda url, langs: ("00:00:00.000 --> 00:00:02.000\n<00:00:00.500><c> hi</c>", "en"),
+        )
+
+        transcript = await provider.fetch("https://www.youtube.com/watch?v=abcde12345")
+
+        assert isinstance(transcript, TranscriptData)
+        assert transcript.words[0].word == "hi"
+        assert transcript.words[0].start_time == pytest.approx(0.5)
+
+    @pytest.mark.asyncio
+    async def test_fetch_propagates_when_captions_unavailable(self, monkeypatch) -> None:
+        provider = YouTubeCaptionTranscriptProvider()
+        monkeypatch.setattr(
+            "app.providers.transcript._download_caption",
+            lambda url, langs: (_ for _ in ()).throw(
+                ExternalServiceError("No captions available", service="youtube-captions")
+            ),
+        )
+
+        with pytest.raises(ExternalServiceError):
+            await provider.fetch("https://www.youtube.com/watch?v=abcde12345")

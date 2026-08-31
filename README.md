@@ -122,6 +122,33 @@ Search cached transcript for specific video.
 
 Set `JUMPTO_TRANSCRIPT_MODE=fake` to run without an Assembly.ai key (downloads are skipped and a fake transcript is used in dev).
 
+## Production Deployment (Vercel + Render)
+
+The API is a single stateful FastAPI app split across two hosts:
+
+- **API (FastAPI)** → deployed on **Vercel** serverless functions.
+- **Worker (Celery)** → deployed on **Render** as a background worker via
+  [`render.yaml`](render.yaml) and the [`Dockerfile`](Dockerfile).
+
+Both must be configured to reach the **same Redis broker and the same Neon
+database**:
+
+1. **Redis**: Render's managed Redis is private and unreachable from Vercel, so
+   use an internet-reachable Redis (e.g. Upstash free tier). Set `REDIS_URL`
+   identically on **both** Vercel and Render.
+2. **Database**: set the Neon `DATABASE_URL` on both. `sslmode=...` query params
+   are supported (translated to asyncpg's `ssl`); `channel_binding` is stripped.
+3. **Transcription**: set `ASSEMBLY_API_KEY`,
+   `JUMPTO_LIVE_EXTERNAL_CALLS=true`, `JUMPTO_TRANSCRIPT_MODE=real`, and
+   `ENVIRONMENT=production` on the worker.
+
+Vercel API env: `DATABASE_URL`, `REDIS_URL`, `CORS_ORIGINS`, `ENVIRONMENT`.
+Render worker env: `DATABASE_URL`, `REDIS_URL`, `ASSEMBLY_API_KEY`,
+`JUMPTO_LIVE_EXTERNAL_CALLS`, `JUMPTO_TRANSCRIPT_MODE`, `ENVIRONMENT`.
+
+The worker image runs `alembic upgrade head` before starting Celery, applying
+schema migrations to Neon automatically on deploy.
+
 ## Testing
 
 ### Backend

@@ -3,6 +3,8 @@
 import asyncio
 import contextlib
 import os
+import re
+import shutil
 import tempfile
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -95,6 +97,144 @@ class FakeTranscriptProvider(TranscriptProvider):
         ]
         text = " ".join(word.word for word in words)
         return TranscriptData(language="en", text=text, words=words)
+
+
+_SUPPORTED_CAPTION_LANGUAGES = ("en", "ar")
+
+
+class YouTubeCaptionTranscriptProvider(TranscriptProvider):
+    """Transcript provider that downloads YouTube's own caption track (fast path)."""
+
+    async def fetch(self, youtube_url: str) -> TranscriptData:
+        """Download and parse the best available caption track for a video."""
+        vtt_text, language_code = await asyncio.to_thread(
+            _download_caption, youtube_url, _SUPPORTED_CAPTION_LANGUAGES
+        )
+        return _parse_vtt(vtt_text, language_code)
+
+
+def _download_caption(youtube_url: str, languages: tuple[str, ...]) -> tuple[str, str]:
+    """
+    Download a caption track with yt-dlp and return its (text, language).
+
+    yt-dlp handles YouTube client impersonation and retries so the caption
+    endpoint is reached without the rate limiting that raw HTTP fetches hit.
+    A single best-language track is downloaded to minimize caption requests.
+    """
+    info = _extract_video_info(youtube_url)
+    target = _select_caption_language(info, languages)
+    temp_dir = tempfile.mkdtemp(prefix="jumpto-captions-")
+    options: dict = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "writesubtitles": True,
+        "writeautomaticsub": True,
+        "subtitleslangs": [target],
+        "outtmpl": str(Path(temp_dir) / "%(id)s.%(ext)s"),
+    }
+    try:
+        import yt_dlp  # Optional dependency, only needed for live calls
+
+        with yt_dlp.YoutubeDL(options) as ydl:
+            ydl.extract_info(youtube_url, download=True)
+        vtt_files = sorted(Path(temp_dir).glob("*.vtt"))
+        if not vtt_files:
+            raise ExternalServiceError("No captions available", service="youtube-captions")
+        chosen = _preferred_vtt_file(vtt_files)
+        text = chosen.read_text(encoding="utf-8", errors="replace")
+        return text, _caption_language(chosen.name)
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def _extract_video_info(youtube_url: str) -> dict:
+    """Extract full video metadata (including caption tracks) with yt-dlp."""
+    import yt_dlp  # Optional dependency, only needed for live calls
+
+    options: dict = {"quiet": True, "no_warnings": True, "skip_download": True}
+    with yt_dlp.YoutubeDL(options) as ydl:
+        return ydl.extract_info(youtube_url, download=False)
+
+
+def _select_caption_language(info: dict, supported: tuple[str, ...]) -> str:
+    """
+    Pick a single caption language to download for a video.
+
+    Prefers the video's original-language caption (``xx-orig``) when it is a
+    supported language, then a plain supported code, then a supported
+    regional variant.
+    """
+    lowered = [
+        key.lower()
+        for key in list((info.get("automatic_captions") or {}).keys())
+        + list((info.get("subtitles") or {}).keys())
+    ]
+    if not lowered:
+        raise ExternalServiceError("No captions available", service="youtube-captions")
+    for language in supported:
+        if f"{language}-orig" in lowered:
+            return language
+    for language in supported:
+        if language in lowered:
+            return language
+    for language in supported:
+        if any(key.startswith(f"{language}-") or key.startswith(f"{language}_") for key in lowered):
+            return language
+    raise ExternalServiceError("No captions available", service="youtube-captions")
+
+
+def _preferred_vtt_file(files: list[Path]) -> Path:
+    """Pick the caption file in the most preferred supported language."""
+    return min(files, key=lambda path: _caption_rank(_caption_language(path.name)))
+
+
+def _caption_rank(language: str) -> tuple[int, int]:
+    """Rank a caption language, supported codes first."""
+    if language in _SUPPORTED_CAPTION_LANGUAGES:
+        return (0, _SUPPORTED_CAPTION_LANGUAGES.index(language))
+    return (1, 0)
+
+
+def _caption_language(filename: str) -> str:
+    """Extract the language code from a caption filename."""
+    return _language_base(Path(filename).stem.rsplit(".", 1)[-1])
+
+
+_VTT_WORD_RE = re.compile(r"<(\d{2}):(\d{2}):(\d{2})\.(\d{3})><c>(.*?)</c>")
+
+
+def _parse_vtt(vtt_text: str, language_code: str) -> TranscriptData:
+    """
+    Parse a VTT caption body into timestamped words.
+
+    YouTube auto-captions embed per-word timestamps as inline
+    ``<HH:MM:SS.mmm><c>word</c>`` tokens; those carry the timing we need.
+    """
+    words: list[TranscriptWordData] = []
+    for match in _VTT_WORD_RE.finditer(vtt_text):
+        hours, minutes, seconds, millis = (int(part) for part in match.groups()[:4])
+        raw = match.group(5).strip()
+        if not raw:
+            continue
+        start = hours * 3600 + minutes * 60 + seconds + millis / 1000.0
+        words.append(TranscriptWordData(word=raw, start_time=start, end_time=start))
+    _close_word_times(words)
+    text = " ".join(word.word for word in words)
+    return TranscriptData(language=_language_base(language_code), text=text, words=words)
+
+
+def _close_word_times(words: list[TranscriptWordData]) -> None:
+    """Set each word's end_time from the next word's start (or a fallback gap)."""
+    for index in range(len(words) - 1):
+        words[index].end_time = words[index + 1].start_time
+    if words:
+        words[-1].end_time = words[-1].start_time + 0.3
+
+
+def _language_base(code: str) -> str:
+    """Reduce a locale/region language code to its base portion."""
+    return code.split("-")[0].split("_")[0].lower()
 
 
 class AssemblyTranscriptProvider(TranscriptProvider):

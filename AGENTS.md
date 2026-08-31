@@ -93,54 +93,10 @@ through the backend to the database:
 If any layer is untested or unverified, say it is "in progress" / report the
 remaining work instead of saying "done".
 
-## Completion notification
+## Python Code Architecture & Project Structure
 
-When a task is finished, notify the user with a sound (macOS) using a shell
-command such as:
-```
-say "Done"
-```
+- **Module Initialization (`__init__.py`) Restrictions**: 
+  - NEVER write primary application logic, SQLAlchemy models, FastAPI schemas, or database tables directly inside `__init__.py` files.
+  - `__init__.py` must strictly remain empty OR be used solely for exposing top-level package imports and defining `__all__`.
+  - All database models must be placed in explicit, dedicated files (e.g., `app/models.py` or within an `app/models/` directory using domain-specific files like `app/models/video.py`).
 
-Play it once, right after reporting the task as complete.
-
-
-### React Frontend
-- Use TypeScript
-- JSDoc comments on functions
-- Maximum 50 lines per component
-- ESLint strict mode
-- Prettier formatted
-- No console.log() in production
-- All events handled
-- Error boundaries
-- Unit test coverage >80%
-- Component tests with React Testing Library
-
-## Task completion rule (anti-"half-done" rule)
-
-Do NOT report a task as done or move on until the ENTIRE feature is finished and
-verified. A feature is NOT complete when the main files are written — it is
-complete only when every supporting piece is in place and every check passes.
-
-Before reporting "done", walk this checklist and address anything missing:
-
-1. ALL files for the feature exist and are wired together (components, hooks,
-   styles/CSS, i18n copy in BOTH `en` and `ar`, types, imports, props, refs).
-   A component is not "added" until it is styled and visible, not just present
-   in the DOM.
-2. Existing tests broken by the change are updated, and new tests cover the new
-   behavior (including error/edge cases).
-3. The full verification passes end-to-end:
-   - `tsc --noEmit` clean
-   - ESLint clean
-   - Prettier clean
-   - `npm run build` passes
-   - full test suite passes with coverage >= 80%
-   - backend suite / ruff / black still green if backend code changed
-4. A live/manual check confirms the feature actually renders and works in the
-   running app (not just unit tests).
-5. Only report done once every item above is green. Otherwise report it as
-   "in progress" and list the exact remaining steps.
-
-Stopping mid-implementation to answer a question is fine; just say the feature
-is "in progress" and resume it to completion before claiming it is done.
