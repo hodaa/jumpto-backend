@@ -61,7 +61,11 @@ def create_app() -> FastAPI:
     # Include routers
     app.include_router(api_router)
 
-    # Health check endpoint
+    # Health check endpoints
+    @app.get("/")
+    async def root_health() -> dict:
+        return {"status": "healthy"}
+
     @app.get("/health")
     async def health_check() -> dict:
         return {"status": "healthy"}
