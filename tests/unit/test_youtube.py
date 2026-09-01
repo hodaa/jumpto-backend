@@ -7,6 +7,7 @@ from app.services.youtube import (
     YouTubeVideoInfo,
     extract_video_id,
     is_youtube_url,
+    normalize_youtube_url,
     validate_youtube_url,
 )
 
@@ -75,6 +76,15 @@ class TestIsYouTubeUrl:
         assert is_youtube_url("https://vimeo.com/123456") is False
 
 
+class TestNormalizeYoutubeUrl:
+    """Tests for normalize_youtube_url function."""
+
+    def test_builds_canonical_watch_url(self) -> None:
+        assert normalize_youtube_url("dQw4w9WgXcQ") == (
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        )
+
+
 class TestValidateYouTubeUrl:
     """Tests for validate_youtube_url function."""
 
@@ -83,7 +93,17 @@ class TestValidateYouTubeUrl:
         result = validate_youtube_url(url)
         assert isinstance(result, YouTubeVideoInfo)
         assert result.video_id == "dQw4w9WgXcQ"
-        assert result.original_url == url
+        assert result.original_url == normalize_youtube_url("dQw4w9WgXcQ")
+
+    def test_playlist_params_are_stripped(self) -> None:
+        url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PL123&index=3"
+        result = validate_youtube_url(url)
+        assert result.original_url == "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+
+    def test_tracking_params_are_stripped(self) -> None:
+        url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ&si=abc123&t=30s"
+        result = validate_youtube_url(url)
+        assert result.original_url == "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 
     def test_invalid_url_raises_exception(self) -> None:
         url = "https://example.com/video"

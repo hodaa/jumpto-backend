@@ -24,8 +24,7 @@ from app.schemas import (
     VideoSearchResponseUnion,
 )
 from app.services import JobService, SearchService, languages_match, validate_youtube_url
-from app.tasks.transcription import download_and_transcribe
-from app.core.database import async_session_factory
+from app.services.messaging import dispatch_transcription
 
 router = APIRouter()
 
@@ -78,7 +77,7 @@ async def search(
     video_repo: VideoRepository = Depends(get_video_repo),
     search_service: SearchService = Depends(get_search_service),
     job_service: JobService = Depends(get_job_service),
-    session: AsyncSession = Depends(get_db_session)
+    session: AsyncSession = Depends(get_db_session),
 ) -> SearchResponse:
     """
     Search for a keyword in a YouTube video transcript (cache-first).
@@ -96,16 +95,21 @@ async def search(
                 video_language=video.language,
             )
         results = await search_service.search(video.id, request.keyword)
+        if not results:
+            return SearchResponseCached(status=SearchStatus.NOT_FOUND, results=[])
         return SearchResponseCached(status="found", results=results)
 
     if not video:
         video = await _get_or_create_video(
-            video_repo, str(request.youtube_url), youtube_info.video_id, str(request.language.value)
+            video_repo,
+            youtube_info.original_url,
+            youtube_info.video_id,
+            str(request.language.value),
         )
 
     job = await job_service.create_or_get_job(video.id)
     await session.commit()
-    _dispatch_pipeline(job.id, youtube_info.video_id, str(request.youtube_url))
+    _dispatch_pipeline(job.id)
     response = SearchResponseProcessing(status="processing", job_id=job.id, video_id=video.id)
     return JSONResponse(
         status_code=status.HTTP_202_ACCEPTED,
@@ -176,6 +180,8 @@ async def search_video(
         )
 
     results = await search_service.search(video_id, keyword.strip())
+    if not results:
+        return VideoSearchResponse(status=SearchStatus.NOT_FOUND, results=[])
     return VideoSearchResponse(status="found", results=results)
 
 
@@ -187,7 +193,9 @@ async def _get_or_create_video(
 ) -> Video:
     """Create a video record, resolving a concurrent-creation race."""
     try:
-        return await video_repo.create(youtube_url=youtube_url, video_id=youtube_id, language=language)
+        return await video_repo.create(
+            youtube_url=youtube_url, video_id=youtube_id, language=language
+        )
     except IntegrityError:
         await video_repo.session.rollback()
         video = await video_repo.get_by_video_id(youtube_id)
@@ -196,6 +204,6 @@ async def _get_or_create_video(
         raise
 
 
-def _dispatch_pipeline(job_id: UUID, youtube_id: str, youtube_url: str) -> None:
-    """Enqueue the transcription pipeline for a job."""
-    download_and_transcribe.delay(str(job_id), youtube_id, youtube_url)
+def _dispatch_pipeline(job_id: UUID) -> None:
+    """Publish the transcription job to the standalone worker."""
+    dispatch_transcription(job_id)

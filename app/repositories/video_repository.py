@@ -1,13 +1,13 @@
-
 from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
-from app.models import  Video
+from app.models import Video
 
 logger = get_logger(__name__)
+
 
 class VideoRepository:
     """Repository for Video operations."""

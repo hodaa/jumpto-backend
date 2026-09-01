@@ -1,13 +1,14 @@
-
 from collections.abc import Sequence
 from uuid import UUID
 
-from sqlalchemy import  select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import  TranscriptWord
 from app.core.logging import get_logger
+from app.models import TranscriptWord
+
 logger = get_logger(__name__)
+
 
 class TranscriptWordRepository:
     """Repository for TranscriptWord operations."""
@@ -45,4 +46,3 @@ class TranscriptWordRepository:
             .order_by(TranscriptWord.word_index)
         )
         return list(result.scalars().all())
-

@@ -100,3 +100,8 @@ remaining work instead of saying "done".
   - `__init__.py` must strictly remain empty OR be used solely for exposing top-level package imports and defining `__all__`.
   - All database models must be placed in explicit, dedicated files (e.g., `app/models.py` or within an `app/models/` directory using domain-specific files like `app/models/video.py`).
 
+### Rule: Environment Variables for External URLs
+- **NEVER** hardcode any external URL, API endpoint, domain, or base URL directly in the codebase (frontend or backend).
+- **ALWAYS** read external URLs from environment variables (e.g., `.env`).
+
+

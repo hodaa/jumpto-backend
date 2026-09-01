@@ -69,6 +69,22 @@ class JobService:
         """
         return await self.job_repo.update_status(job_id, status=JobStatus.PROCESSING, progress=10)
 
+    async def set_progress(self, job_id: UUID, progress: int) -> Job:
+        """
+        Update the job's progress percentage without changing its status.
+
+        Used by the worker to report intermediate pipeline stages so the UI
+        progress bar climbs (each of download / transcribe / search).
+
+        Args:
+            job_id: Job UUID
+            progress: Intermediate progress percent (1..99)
+
+        Returns:
+            Updated job
+        """
+        return await self.job_repo.update_status(job_id, progress=progress)
+
     async def complete_job(self, job_id: UUID) -> Job:
         """
         Mark job as completed.

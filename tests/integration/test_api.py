@@ -266,3 +266,72 @@ class TestLanguageMismatch:
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "found"
+
+
+class TestNoResults:
+    """Tests for the not_found status when no matches are found."""
+
+    async def _seed_transcribed_video(self, db_session, suffix: str) -> Video:
+        """Seed a transcribed English video with a single known word."""
+        from datetime import UTC, datetime
+
+        from app.models import TranscriptWord
+
+        video_id = f"notfndvid{suffix}"
+        video = Video(
+            youtube_url=f"https://www.youtube.com/watch?v={video_id}",
+            video_id=video_id,
+            title="Not Found Test",
+            language="en",
+            transcript="hello world",
+            transcribed_at=datetime.now(UTC),
+        )
+        db_session.add(video)
+        await db_session.flush()
+        for word_index, word in enumerate(["hello", "world"]):
+            word_row = TranscriptWord(
+                video_id=video.id,
+                word_index=word_index,
+                word=word,
+                start_time=float(word_index),
+                end_time=float(word_index + 0.5),
+            )
+            db_session.add(word_row)
+        await db_session.flush()
+        return video
+
+    @pytest.mark.asyncio
+    async def test_post_search_non_existent_keyword_returns_not_found(
+        self,
+        client: AsyncClient,
+        db_session,
+    ) -> None:
+        """POST /api/search on a transcribed video with a missing keyword returns not_found."""
+        video = await self._seed_transcribed_video(db_session, "01")
+
+        response = await client.post(
+            "/api/search",
+            json={"youtube_url": video.youtube_url, "keyword": "nonexistent", "language": "en"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "not_found"
+        assert data["results"] == []
+
+    @pytest.mark.asyncio
+    async def test_post_search_existing_keyword_still_returns_found(
+        self,
+        client: AsyncClient,
+        db_session,
+    ) -> None:
+        """POST /api/search with an existing keyword still returns found."""
+        video = await self._seed_transcribed_video(db_session, "02")
+
+        response = await client.post(
+            "/api/search",
+            json={"youtube_url": video.youtube_url, "keyword": "hello", "language": "en"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "found"
+        assert len(data["results"]) == 1

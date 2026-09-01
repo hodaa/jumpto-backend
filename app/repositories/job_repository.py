@@ -1,9 +1,6 @@
-
-
-from collections.abc import Sequence
 from uuid import UUID
 
-from sqlalchemy import  select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -72,20 +69,21 @@ class JobRepository:
         self,
         job_id: UUID,
         *,
-        status: str,
+        status: str | None = None,
         progress: int | None = None,
         error: str | None = None,
     ) -> Job:
-        """Update job status."""
+        """Update job status and/or progress/error fields."""
         job = await self.get_by_id(job_id)
         if not job:
             raise ValueError(f"Job {job_id} not found")
 
-        job.status = status
+        if status is not None:
+            job.status = status
         if progress is not None:
             job.progress = progress
         if error is not None:
             job.error = error
         await self.session.flush()
-        logger.info("Updated job status", job_id=job_id, status=status)
+        logger.info("Updated job status", job_id=job_id, status=job.status)
         return job

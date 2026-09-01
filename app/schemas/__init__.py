@@ -152,3 +152,60 @@ class ErrorResponse(BaseModel):
 # Union types for OpenAPI documentation
 SearchResponse = SearchResponseCached | SearchResponseProcessing | SearchResponseLanguageMismatch
 VideoSearchResponseUnion = VideoSearchResponse | SearchResponseLanguageMismatch
+
+
+class InternalWordData(BaseModel):
+    """A single transcript word in an internal store-transcript request."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    word_index: int = Field(..., ge=0, description="Zero-based position of the word")
+    word: str = Field(..., min_length=1, description="Normalized word text")
+    start_time: float = Field(..., ge=0, description="Start time in seconds")
+    end_time: float = Field(..., ge=0, description="End time in seconds")
+
+
+class InternalStoreTranscriptRequest(BaseModel):
+    """Request schema for POST /internal/jobs/{job_id}/transcript."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    title: str = Field(..., min_length=1, description="Video title")
+    duration_seconds: int = Field(..., ge=0, description="Video duration in seconds")
+    language: str = Field(default="en", min_length=1, description="Transcript language code")
+    transcript_text: str = Field(..., min_length=1, description="Full transcript text")
+    words: list[InternalWordData] = Field(default_factory=list, description="Per-word timestamps")
+
+
+class InternalFailRequest(BaseModel):
+    """Request schema for POST /internal/jobs/{job_id}/fail."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    error: str = Field(..., min_length=1, description="User-safe error message")
+
+
+class InternalProgressRequest(BaseModel):
+    """Request schema for POST /internal/jobs/{job_id}/progress."""
+
+    progress: int = Field(..., ge=1, le=99, description="Intermediate progress percent")
+
+
+class InternalJobResponse(BaseModel):
+    """Response schema for GET /internal/jobs/{job_id}."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    job_id: UUID
+    video_id: UUID
+    youtube_video_id: str
+    youtube_url: str
+    status: str
+
+
+class InternalStatusResponse(BaseModel):
+    """Response schema for internal job lifecycle mutations."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    status: str

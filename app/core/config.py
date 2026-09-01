@@ -42,6 +42,13 @@ class Settings(BaseSettings):
         description="Redis connection URL",
     )
 
+    # Job / transcription timeout
+    job_timeout_seconds: int = Field(
+        default=600,
+        ge=1,
+        description="Max seconds a transcription job may run before it is failed",
+    )
+
     # Assembly AI
     assembly_api_key: str = Field(
         default="",
@@ -58,6 +65,12 @@ class Settings(BaseSettings):
     environment: str = Field(
         default="development",
         description="Application environment (development/production)",
+    )
+
+    # Internal worker API key
+    internal_api_key: str = Field(
+        default="",
+        description="Shared API key for internal worker-to-backend communication",
     )
 
     # External calls

@@ -49,6 +49,17 @@ class YouTubeVideoInfo:
     original_url: str
 
 
+def normalize_youtube_url(video_id: str) -> str:
+    """
+    Build a canonical watch URL for a video id, dropping playlist/tracking params.
+
+    Playlist query parameters (``list``, ``index``, ``start_radio``, ``si``) can
+    make yt-dlp hang or resolve the playlist instead of the single video, so the
+    pipeline always operates on a clean ``watch?v=<id>`` URL.
+    """
+    return f"https://www.youtube.com/watch?v={video_id}"
+
+
 def extract_video_id(url: str) -> str | None:
     """
     Extract YouTube video ID from various URL formats.
@@ -110,4 +121,4 @@ def validate_youtube_url(url: str) -> YouTubeVideoInfo:
         raise InvalidYouTubeURLError(url)
 
     logger.debug("Parsed YouTube URL", video_id=video_id, url=url)
-    return YouTubeVideoInfo(video_id=video_id, original_url=url)
+    return YouTubeVideoInfo(video_id=video_id, original_url=normalize_youtube_url(video_id))

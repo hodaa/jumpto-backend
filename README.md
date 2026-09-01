@@ -44,9 +44,12 @@ API will be available at `http://localhost:8000`
 
 ### Worker (transcription pipeline)
 
+The Celery worker lives in the separate **`jumpto-worker`** repo. Run it from
+there:
+
 ```bash
-# From repo root, in another terminal
-scripts/run_worker.sh
+cd ../jumpto-worker
+.venv/bin/celery -A app.tasks.celery_app worker --loglevel=info
 ```
 
 ### Frontend Setup
@@ -127,8 +130,8 @@ Set `JUMPTO_TRANSCRIPT_MODE=fake` to run without an Assembly.ai key (downloads a
 The API is a single stateful FastAPI app split across two hosts:
 
 - **API (FastAPI)** → deployed on **Vercel** serverless functions.
-- **Worker (Celery)** → deployed on **Render** as a background worker via
-  [`render.yaml`](render.yaml) and the [`Dockerfile`](Dockerfile).
+- **Worker (Celery)** → deployed on **Render** as a background worker from the
+  `jumpto-worker` repo (see its [`Dockerfile`](../jumpto-worker/Dockerfile)).
 
 Both must be configured to reach the **same Redis broker and the same Neon
 database**:
