@@ -23,14 +23,6 @@ class SearchStatus(str, Enum):
     FOUND = "found"
     PROCESSING = "processing"
     NOT_FOUND = "not_found"
-    LANGUAGE_MISMATCH = "language_mismatch"
-
-
-class SearchLanguage(str, Enum):
-    """User-selectable search/transcript languages."""
-
-    EN = "en"
-    AR = "ar"
 
 
 class TimestampResult(BaseModel):
@@ -50,10 +42,6 @@ class SearchRequest(BaseModel):
 
     youtube_url: HttpUrl = Field(..., description="YouTube video URL")
     keyword: str = Field(..., min_length=1, description="Keyword or phrase to search")
-    language: SearchLanguage = Field(
-        default=SearchLanguage.EN,
-        description="Language the user is searching in",
-    )
 
     @field_validator("keyword")
     @classmethod
@@ -70,16 +58,6 @@ class SearchResponseCached(BaseModel):
 
     status: SearchStatus = SearchStatus.FOUND
     results: list[TimestampResult] = Field(default_factory=list)
-
-
-class SearchResponseLanguageMismatch(BaseModel):
-    """Response schema when the selected language does not match the video."""
-
-    model_config = ConfigDict(from_attributes=True)
-
-    status: SearchStatus = SearchStatus.LANGUAGE_MISMATCH
-    video_language: str | None = None
-    message: str = "The video is not in the selected language"
 
 
 class SearchResponseProcessing(BaseModel):
@@ -150,5 +128,5 @@ class ErrorResponse(BaseModel):
 
 
 # Union types for OpenAPI documentation
-SearchResponse = SearchResponseCached | SearchResponseProcessing | SearchResponseLanguageMismatch
-VideoSearchResponseUnion = VideoSearchResponse | SearchResponseLanguageMismatch
+SearchResponse = SearchResponseCached | SearchResponseProcessing
+VideoSearchResponseUnion = VideoSearchResponse

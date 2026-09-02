@@ -12,18 +12,15 @@ from app.core.exceptions import VideoNotFoundError, VideoNotTranscribedError
 from app.models import Video
 from app.repositories import JobRepository, TranscriptWordRepository, VideoRepository
 from app.schemas import (
-    SearchLanguage,
     SearchRequest,
     SearchResponse,
     SearchResponseCached,
-    SearchResponseLanguageMismatch,
     SearchResponseProcessing,
     SearchStatus,
     StatusResponse,
     VideoSearchResponse,
-    VideoSearchResponseUnion,
 )
-from app.services import JobService, SearchService, languages_match, validate_youtube_url
+from app.services import JobService, SearchService, validate_youtube_url
 from app.tasks.transcription import download_and_transcribe
 from app.core.database import async_session_factory
 
@@ -90,17 +87,16 @@ async def search(
     video = await video_repo.get_by_video_id(youtube_info.video_id)
 
     if video and video.transcribed_at:
-        if not languages_match(request.language.value, video.language):
-            return SearchResponseLanguageMismatch(
-                status=SearchStatus.LANGUAGE_MISMATCH,
-                video_language=video.language,
-            )
         results = await search_service.search(video.id, request.keyword)
+        if not results:
+            return SearchResponseCached(
+                status=SearchStatus.NOT_FOUND, results=[]
+            )
         return SearchResponseCached(status="found", results=results)
 
     if not video:
         video = await _get_or_create_video(
-            video_repo, str(request.youtube_url), youtube_info.video_id, str(request.language.value)
+            video_repo, str(request.youtube_url), youtube_info.video_id
         )
 
     job = await job_service.create_or_get_job(video.id)
@@ -138,9 +134,9 @@ async def get_job_status(
 
 @router.get(
     "/api/video/{video_id}/search",
-    response_model=VideoSearchResponseUnion,
+    response_model=VideoSearchResponse,
     responses={
-        200: {"model": VideoSearchResponseUnion, "description": "Search results"},
+        200: {"model": VideoSearchResponse, "description": "Search results"},
         400: {"description": "Missing or invalid keyword"},
         404: {"description": "Video not found or not transcribed"},
     },
@@ -148,13 +144,9 @@ async def get_job_status(
 async def search_video(
     video_id: UUID,
     keyword: str = Query(..., description="Keyword or phrase to search"),
-    language: SearchLanguage = Query(
-        default=SearchLanguage.EN,
-        description="Language the user is searching in",
-    ),
     video_repo: VideoRepository = Depends(get_video_repo),
     search_service: SearchService = Depends(get_search_service),
-) -> VideoSearchResponse | SearchResponseLanguageMismatch:
+) -> VideoSearchResponse:
     """Search for a keyword within a specific transcribed video."""
     if not keyword.strip():
         raise HTTPException(
@@ -169,13 +161,9 @@ async def search_video(
     if not video.transcribed_at:
         raise VideoNotTranscribedError(str(video_id))
 
-    if not languages_match(language.value, video.language):
-        return SearchResponseLanguageMismatch(
-            status=SearchStatus.LANGUAGE_MISMATCH,
-            video_language=video.language,
-        )
-
     results = await search_service.search(video_id, keyword.strip())
+    if not results:
+        return VideoSearchResponse(status=SearchStatus.NOT_FOUND, results=[])
     return VideoSearchResponse(status="found", results=results)
 
 

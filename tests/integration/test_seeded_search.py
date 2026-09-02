@@ -94,7 +94,9 @@ async def test_seeded_video_exact_phrase_search(
     # Search for non-existent phrase
     response = await client.get(f"/api/video/{video.id}/search?keyword=nonexistent phrase")
     assert response.status_code == 200
-    assert response.json()["results"] == []
+    data = response.json()
+    assert data["status"] == "not_found"
+    assert data["results"] == []
 
     # Case insensitive search
     response = await client.get(f"/api/video/{video.id}/search?keyword=HELLO WORLD")

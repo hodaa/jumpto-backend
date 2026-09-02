@@ -169,100 +169,70 @@ class TestHealthEndpoint:
         assert response.json() == {"status": "healthy"}
 
 
-class TestLanguageMismatch:
-    """Tests for selected-language vs video-language matching."""
+class TestNoResults:
+    """Tests for the not_found status when no matches are found."""
 
-    async def _seed_arabic_video(self, db_session, suffix: str) -> Video:
-        """Seed a transcribed video tagged as Arabic."""
+    async def _seed_transcribed_video(self, db_session, suffix: str) -> Video:
+        """Seed a transcribed English video with a single known word."""
         from datetime import UTC, datetime
 
         from app.models import TranscriptWord
 
+        video_id = f"notfndvid{suffix}"
         video = Video(
-            youtube_url=f"https://www.youtube.com/watch?v=arabicvid{suffix}",
-            video_id=f"arabicvid{suffix}",
-            title="Arabic Video",
-            language="ar",
-            transcript="مرحبا بالعالم",
+            youtube_url=f"https://www.youtube.com/watch?v={video_id}",
+            video_id=video_id,
+            title="Not Found Test",
+            language="en",
+            transcript="hello world",
             transcribed_at=datetime.now(UTC),
         )
         db_session.add(video)
         await db_session.flush()
-        word = TranscriptWord(
-            video_id=video.id,
-            word_index=0,
-            word="مرحبا",
-            start_time=0.0,
-            end_time=0.5,
-        )
-        db_session.add(word)
+        for word_index, word in enumerate(["hello", "world"]):
+            word_row = TranscriptWord(
+                video_id=video.id,
+                word_index=word_index,
+                word=word,
+                start_time=float(word_index),
+                end_time=float(word_index + 0.5),
+            )
+            db_session.add(word_row)
         await db_session.flush()
         return video
 
     @pytest.mark.asyncio
-    async def test_search_cached_returns_mismatch_for_diff_language(
+    async def test_post_search_non_existent_keyword_returns_not_found(
         self,
         client: AsyncClient,
         db_session,
     ) -> None:
-        """POST /api/search with default English against an Arabic video."""
-        video = await self._seed_arabic_video(db_session, "01")
+        """POST /api/search on a transcribed video with a missing keyword returns not_found."""
+        video = await self._seed_transcribed_video(db_session, "01")
 
         response = await client.post(
             "/api/search",
-            json={"youtube_url": video.youtube_url, "keyword": "مرحبا", "language": "en"},
+            json={"youtube_url": video.youtube_url, "keyword": "nonexistent"},
         )
         assert response.status_code == 200
         data = response.json()
-        assert data["status"] == "language_mismatch"
-        assert data["video_language"] == "ar"
+        assert data["status"] == "not_found"
+        assert data["results"] == []
 
     @pytest.mark.asyncio
-    async def test_search_cached_returns_results_for_matching_language(
+    async def test_post_search_existing_keyword_still_returns_found(
         self,
         client: AsyncClient,
         db_session,
     ) -> None:
-        """POST /api/search with Arabic against an Arabic video returns found."""
-        video = await self._seed_arabic_video(db_session, "02")
+        """POST /api/search with an existing keyword still returns found."""
+        video = await self._seed_transcribed_video(db_session, "02")
 
         response = await client.post(
             "/api/search",
-            json={"youtube_url": video.youtube_url, "keyword": "مرحبا", "language": "ar"},
+            json={"youtube_url": video.youtube_url, "keyword": "hello"},
         )
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "found"
-
-    @pytest.mark.asyncio
-    async def test_video_search_returns_mismatch_for_diff_language(
-        self,
-        client: AsyncClient,
-        db_session,
-    ) -> None:
-        """GET /api/video/{id}/search returns mismatch for a differing language."""
-        video = await self._seed_arabic_video(db_session, "03")
-
-        response = await client.get(
-            f"/api/video/{video.id}/search", params={"keyword": "مرحبا", "language": "en"}
-        )
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "language_mismatch"
-        assert data["video_language"] == "ar"
-
-    @pytest.mark.asyncio
-    async def test_video_search_matching_language_returns_results(
-        self,
-        client: AsyncClient,
-        db_session,
-    ) -> None:
-        """GET /api/video/{id}/search returns results for a matching language."""
-        video = await self._seed_arabic_video(db_session, "04")
-
-        response = await client.get(
-            f"/api/video/{video.id}/search", params={"keyword": "مرحبا", "language": "ar"}
-        )
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "found"
+        assert len(data["results"]) == 1
