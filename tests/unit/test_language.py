@@ -1,6 +1,6 @@
-"""Unit tests for language normalization and matching helpers."""
+"""Unit tests for language normalization helpers."""
 
-from app.services.language import languages_match, normalize_language
+from app.services.language import normalize_language
 
 
 def test_normalize_english_locales() -> None:
@@ -26,19 +26,3 @@ def test_normalize_unknown_and_empty() -> None:
     assert normalize_language("  ") is None
     assert normalize_language("fr") is None
     assert normalize_language("zh-CN") is None
-
-
-def test_languages_match_same() -> None:
-    """Matching languages return True."""
-    assert languages_match("en", "en")
-    assert languages_match("en", "en-us")
-    assert languages_match("ar", "ar-EG")
-
-
-def test_languages_match_different() -> None:
-    """Different or unknown languages return False."""
-    assert not languages_match("en", "ar")
-    assert not languages_match("ar", "en-us")
-    assert not languages_match("en", None)
-    assert not languages_match(None, "en")
-    assert not languages_match("en", "fr")

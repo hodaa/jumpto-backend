@@ -1,7 +1,7 @@
 """Services package exports."""
 
 from app.services.job import JobService
-from app.services.language import languages_match, normalize_language
+from app.services.language import normalize_language
 from app.services.search import SearchService
 from app.services.youtube import (
     YouTubeVideoInfo,
@@ -16,7 +16,6 @@ __all__ = [
     "YouTubeVideoInfo",
     "extract_video_id",
     "is_youtube_url",
-    "languages_match",
     "normalize_language",
     "validate_youtube_url",
 ]
