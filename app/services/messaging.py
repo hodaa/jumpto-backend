@@ -22,13 +22,26 @@ celery_app = Celery(
     backend=_redis_url,
 )
 
-celery_app.conf.broker_use_ssl = {
-    "ssl_cert_reqs": ssl.CERT_REQUIRED,
-}
+_redis_url = _settings.redis_url
 
-celery_app.conf.result_backend_transport_options = {
-    "ssl_cert_reqs": ssl.CERT_REQUIRED,
-}
+if _redis_url.startswith("rediss://"):
+    separator = "&" if "?" in _redis_url else "?"
+    _redis_url = f"{_redis_url}{separator}ssl_cert_reqs=CERT_REQUIRED"
+
+celery_app = Celery(
+    "jumpto",
+    broker=_redis_url,
+    backend=_redis_url,
+)
+
+if _redis_url.startswith("rediss://"):
+    celery_app.conf.broker_use_ssl = {
+        "ssl_cert_reqs": ssl.CERT_REQUIRED,
+    }
+
+    celery_app.conf.result_backend_transport_options = {
+        "ssl_cert_reqs": ssl.CERT_REQUIRED,
+    }
 
 celery_app.conf.update(
     task_serializer="json",
