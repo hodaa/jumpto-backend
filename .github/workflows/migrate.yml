@@ -1,0 +1,46 @@
+name: DB migrations
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      stamp_revision:
+        description: >-
+          One-time bootstrap: stamp the DB at this revision before upgrading
+          (e.g. 08bdf895432e) when the database was built by create_all and has
+          no alembic_version. Leave empty for a normal upgrade.
+        required: false
+        type: string
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  migrate:
+    name: alembic upgrade head
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Verify DATABASE_URL secret is configured
+        if: env.DATABASE_URL == ''
+        run: |
+          echo "::error::The DATABASE_URL GitHub secret is not set. Add the production Neon database URL as a repository secret named DATABASE_URL, then re-run this workflow."
+          exit 1
+
+      - name: Bootstrap legacy schema (optional)
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.stamp_revision != ''
+        run: alembic stamp "${{ github.event.inputs.stamp_revision }}"
+
+      - name: Apply migrations
+        run: alembic upgrade head
