@@ -83,8 +83,13 @@ class SearchService:
             target_words=normalized_words,
         )
 
-        # Build word_index -> word map for accurate snippets
-        ordered_words = await self.transcript_repo.get_by_video_id(video_id)
+        # Build word_index -> word map for accurate snippets (windowed fetch
+        # around the matches instead of loading the whole transcript).
+        ordered_words = await self.transcript_repo.get_by_index_range(
+            video_id,
+            start_index=self._snippet_window_start(matches, len(normalized_words)),
+            end_index=self._snippet_window_end(matches, len(normalized_words)),
+        )
         words_by_index = {word.word_index: word.word for word in ordered_words}
 
         results = [
@@ -191,3 +196,17 @@ class SearchService:
         first = max(0, start_index - context)
         last = start_index + phrase_len + context
         return " ".join(words_by_index[i] for i in range(first, last) if i in words_by_index)
+
+    @staticmethod
+    def _snippet_window_start(matches: Sequence[TranscriptWord], phrase_len: int) -> int:
+        """Return the lowest word_index a snippet window must include."""
+        if not matches:
+            return 0
+        return max(0, min(match.word_index for match in matches) - 3)
+
+    @staticmethod
+    def _snippet_window_end(matches: Sequence[TranscriptWord], phrase_len: int) -> int:
+        """Return the highest word_index a snippet window must include."""
+        if not matches:
+            return 0
+        return max(match.word_index + phrase_len + 3 for match in matches)

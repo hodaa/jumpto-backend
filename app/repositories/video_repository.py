@@ -2,6 +2,7 @@ from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import defer
 
 from app.core.logging import get_logger
 from app.models import Video
@@ -20,9 +21,27 @@ class VideoRepository:
         result = await self.session.execute(select(Video).where(Video.id == video_id))
         return result.scalar_one_or_none()
 
+    async def get_by_id_lite(self, video_id: UUID) -> Video | None:
+        """Get video by primary key, skipping the heavy transcript columns."""
+        result = await self.session.execute(
+            select(Video)
+            .where(Video.id == video_id)
+            .options(defer(Video.transcript), defer(Video.transcript_tsvector))
+        )
+        return result.scalar_one_or_none()
+
     async def get_by_video_id(self, video_id: str) -> Video | None:
         """Get video by YouTube video ID."""
         result = await self.session.execute(select(Video).where(Video.video_id == video_id))
+        return result.scalar_one_or_none()
+
+    async def get_by_video_id_lite(self, video_id: str) -> Video | None:
+        """Get video by YouTube video ID, skipping the heavy transcript columns."""
+        result = await self.session.execute(
+            select(Video)
+            .where(Video.video_id == video_id)
+            .options(defer(Video.transcript), defer(Video.transcript_tsvector))
+        )
         return result.scalar_one_or_none()
 
     async def create(
@@ -55,7 +74,7 @@ class VideoRepository:
         duration_seconds: int,
     ) -> Video:
         """Update video metadata from the media provider."""
-        video = await self.get_by_id(video_id)
+        video = await self.session.get(Video, video_id)
         if not video:
             raise ValueError(f"Video {video_id} not found")
         video.title = title
@@ -73,7 +92,7 @@ class VideoRepository:
         provider: str = "",
     ) -> Video:
         """Store transcript text, language, provider and full-text vector."""
-        video = await self.get_by_id(video_id)
+        video = await self.session.get(Video, video_id)
         if not video:
             raise ValueError(f"Video {video_id} not found")
         video.transcript = transcript

@@ -72,7 +72,7 @@ async def internal_get_job(
 ) -> InternalJobResponse:
     """Return job and video data needed by the worker to run the pipeline."""
     job = await job_service.get_job(job_id)
-    video = await video_repo.get_by_id(job.video_id)
+    video = await video_repo.get_by_id_lite(job.video_id)
     if not video:
         raise VideoNotFoundError(str(job.video_id))
     return InternalJobResponse(

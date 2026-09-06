@@ -15,6 +15,7 @@ def mock_transcript_repo() -> MagicMock:
     """Create a mock TranscriptWordRepository."""
     repo = MagicMock(spec=TranscriptWordRepository)
     repo.search_exact_phrase = AsyncMock()
+    repo.get_by_index_range = AsyncMock()
     return repo
 
 
@@ -287,3 +288,77 @@ class TestWordBoundaries:
         results = await search_service.search(video_id, "love")
 
         assert results == []
+
+
+class TestWindowedSnippetFetch:
+    """Tests for the windowed snippet query (fetch only words near matches)."""
+
+    @pytest.mark.asyncio
+    async def test_fetches_only_match_window(
+        self,
+        search_service: SearchService,
+        mock_transcript_repo: MagicMock,
+    ) -> None:
+        video_id = uuid4()
+        match = TranscriptWord(
+            id=uuid4(), video_id=video_id, word_index=10, word="hello", start_time=5.0, end_time=5.5
+        )
+        mock_transcript_repo.search_exact_phrase.return_value = [match]
+
+        # Snippet window: context 3 left, phrase_len + 3 right.
+        mock_transcript_repo.get_by_index_range.return_value = [
+            TranscriptWord(
+                id=uuid4(), video_id=video_id, word_index=i, word="w", start_time=0.0, end_time=0.5
+            )
+            for i in range(7, 14)
+        ]
+
+        results = await search_service.search(video_id, "hello")
+
+        assert len(results) == 1
+        mock_transcript_repo.get_by_index_range.assert_awaited_once_with(
+            video_id, start_index=7, end_index=14
+        )
+
+    @pytest.mark.asyncio
+    async def test_window_clamps_to_zero(
+        self,
+        search_service: SearchService,
+        mock_transcript_repo: MagicMock,
+    ) -> None:
+        video_id = uuid4()
+        match = TranscriptWord(
+            id=uuid4(), video_id=video_id, word_index=1, word="hi", start_time=0.0, end_time=0.5
+        )
+        mock_transcript_repo.search_exact_phrase.return_value = [match]
+        mock_transcript_repo.get_by_index_range.return_value = []
+
+        await search_service.search(video_id, "hi")
+
+        mock_transcript_repo.get_by_index_range.assert_awaited_once_with(
+            video_id, start_index=0, end_index=5
+        )
+
+    @pytest.mark.asyncio
+    async def test_snippet_uses_windowed_words(
+        self,
+        search_service: SearchService,
+        mock_transcript_repo: MagicMock,
+    ) -> None:
+        video_id = uuid4()
+        match = TranscriptWord(
+            id=uuid4(), video_id=video_id, word_index=2, word="hello", start_time=1.0, end_time=1.5
+        )
+        mock_transcript_repo.search_exact_phrase.return_value = [match]
+
+        context_words = [
+            TranscriptWord(
+                id=uuid4(), video_id=video_id, word_index=i, word=w, start_time=0.0, end_time=0.5
+            )
+            for i, w in enumerate(["the", "big", "hello", "world", "today", "ok"])
+        ]
+        mock_transcript_repo.get_by_index_range.return_value = context_words
+
+        results = await search_service.search(video_id, "hello")
+
+        assert results[0].text_snippet == "the big hello world today ok"

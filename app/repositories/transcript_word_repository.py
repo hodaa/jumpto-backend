@@ -22,15 +22,6 @@ class TranscriptWordRepository:
         await self.session.flush()
         logger.info("Bulk created transcript words", count=len(words))
 
-    async def get_by_video_id(self, video_id: UUID) -> Sequence[TranscriptWord]:
-        """Get all transcript words for a video ordered by word_index."""
-        result = await self.session.execute(
-            select(TranscriptWord)
-            .where(TranscriptWord.video_id == video_id)
-            .order_by(TranscriptWord.word_index)
-        )
-        return result.scalars().all()
-
     async def search_exact_phrase(
         self,
         video_id: UUID,
@@ -46,3 +37,19 @@ class TranscriptWordRepository:
             .order_by(TranscriptWord.word_index)
         )
         return list(result.scalars().all())
+
+    async def get_by_index_range(
+        self,
+        video_id: UUID,
+        start_index: int,
+        end_index: int,
+    ) -> Sequence[TranscriptWord]:
+        """Get transcript words within a word_index range (inclusive)."""
+        result = await self.session.execute(
+            select(TranscriptWord)
+            .where(TranscriptWord.video_id == video_id)
+            .where(TranscriptWord.word_index >= start_index)
+            .where(TranscriptWord.word_index <= end_index)
+            .order_by(TranscriptWord.word_index)
+        )
+        return result.scalars().all()

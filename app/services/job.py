@@ -33,7 +33,7 @@ class JobService:
             Job instance (new or existing in-flight)
         """
         # Verify video exists
-        video = await self.video_repo.get_by_id(video_id)
+        video = await self.video_repo.get_by_id_lite(video_id)
         if not video:
             raise VideoNotFoundError(str(video_id))
 

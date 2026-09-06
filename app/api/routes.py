@@ -1,5 +1,6 @@
 """API routes for the JumpTo application."""
 
+import asyncio
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -83,7 +84,7 @@ async def search(
     otherwise queues a transcription job and returns a job id.
     """
     youtube_info = validate_youtube_url(str(request.youtube_url))
-    video = await video_repo.get_by_video_id(youtube_info.video_id)
+    video = await video_repo.get_by_video_id_lite(youtube_info.video_id)
 
     if video and video.transcribed_at:
         results = await search_service.search(video.id, request.keyword)
@@ -100,7 +101,7 @@ async def search(
 
     job = await job_service.create_or_get_job(video.id)
     await session.commit()
-    _dispatch_pipeline(job.id)
+    await asyncio.to_thread(_dispatch_pipeline, job.id)
     response = SearchResponseProcessing(status="processing", job_id=job.id, video_id=video.id)
     return JSONResponse(
         status_code=status.HTTP_202_ACCEPTED,
@@ -153,7 +154,7 @@ async def search_video(
             detail="Keyword cannot be empty or whitespace only",
         )
 
-    video = await video_repo.get_by_id(video_id)
+    video = await video_repo.get_by_id_lite(video_id)
     if not video:
         raise VideoNotFoundError(str(video_id))
 
@@ -179,7 +180,7 @@ async def _get_or_create_video(
         )
     except IntegrityError:
         await video_repo.session.rollback()
-        video = await video_repo.get_by_video_id(youtube_id)
+        video = await video_repo.get_by_video_id_lite(youtube_id)
         if video:
             return video
         raise
