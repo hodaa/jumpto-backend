@@ -1,9 +1,8 @@
 """Unit tests for async database URL translation."""
 
 import ssl
-from pathlib import Path
 
-from app.core.database import _run_alembic_upgrade, build_async_database_url
+from app.core.database import build_async_database_url
 
 
 class TestBuildAsyncDatabaseUrl:
@@ -38,36 +37,6 @@ class TestBuildAsyncDatabaseUrl:
         assert "sslmode" not in async_url
         assert "channel_binding" not in async_url
         assert connect_args == {"ssl": True}
-
-
-class TestRunAlembicUpgrade:
-    """Tests for the programmatic Alembic upgrade helper."""
-
-    def test_upgrades_to_head_at_project_root(self, monkeypatch) -> None:
-        calls = []
-        project_root = Path(__file__).resolve().parents[2]
-
-        class FakeConfig:
-            def __init__(self, ini_path: str) -> None:
-                calls.append(("config", ini_path))
-
-            def set_main_option(self, key: str, value: str) -> None:
-                calls.append((key, value))
-
-        monkeypatch.setattr("alembic.config.Config", FakeConfig)
-        monkeypatch.setattr(
-            "alembic.command.upgrade", lambda config, revision: calls.append(("upgrade", revision))
-        )
-
-        _run_alembic_upgrade()
-
-        ini = str(project_root / "alembic.ini")
-        script_location = str(project_root / "alembic")
-        assert calls == [
-            ("config", ini),
-            ("script_location", script_location),
-            ("upgrade", "head"),
-        ]
 
     def test_unknown_sslmode_defaults_to_verify_required(self) -> None:
         url = "postgresql://user:pass@host/db?sslmode=bogus"

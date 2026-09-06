@@ -149,8 +149,24 @@ Vercel API env: `DATABASE_URL`, `REDIS_URL`, `CORS_ORIGINS`, `ENVIRONMENT`.
 Render worker env: `DATABASE_URL`, `REDIS_URL`, `ASSEMBLY_API_KEY`,
 `JUMPTO_LIVE_EXTERNAL_CALLS`, `JUMPTO_TRANSCRIPT_MODE`, `ENVIRONMENT`.
 
-The worker image runs `alembic upgrade head` before starting Celery, applying
-schema migrations to Neon automatically on deploy.
+## Database Migrations on Deploy
+
+Schema migrations are a **deploy-time step, not an app-startup step**. The
+serverless API never runs migrations on cold start — it relies on the schema
+already existing. Each deploy applies pending migrations **before** release:
+
+1. **CI/CD job (`.github/workflows/migrate.yml`)**: on every push to `main`, runs
+   `alembic upgrade head` against the production database and turns the check
+   **red** if it fails, so a broken migration blocks the release. Needs a GitHub
+   repository secret `DATABASE_URL` pointing at the production Neon database.
+2. **Worker**: the worker image runs `alembic upgrade head` before starting
+   Celery, applying any schema migrations that run on the worker deploy path.
+3. **One-time legacy bootstrap**: if a database was created by the old
+   `create_all` path it has no `alembic_version` table, so a plain
+   `alembic upgrade head` would try to recreate existing tables and fail. Run
+   the migration workflow manually once with the `stamp_revision` input
+   (the revision matching the schema already in the DB) so alembic only applies
+   the pending changes after it.
 
 ## Testing
 
