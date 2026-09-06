@@ -1,8 +1,10 @@
 """Database configuration and session management."""
 
+import asyncio
 import ssl
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse, urlunparse
 
 from sqlalchemy.ext.asyncio import (
@@ -116,14 +118,13 @@ async def get_db_context() -> AsyncGenerator[AsyncSession, None]:
 
 
 async def init_db() -> None:
-    """Initialize database connection."""
-    logger.info("Initializing database connection")
+    """Apply pending database migrations via Alembic."""
+    logger.info("Applying database migrations")
     try:
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        logger.info("Database initialized successfully")
+        await asyncio.to_thread(_run_alembic_upgrade)
+        logger.info("Database migrations applied successfully")
     except Exception as e:
-        logger.error("Failed to initialize database", error=str(e))
+        logger.error("Failed to apply database migrations", error=str(e))
         raise
 
 
@@ -131,3 +132,14 @@ async def close_db() -> None:
     """Close database connections."""
     logger.info("Closing database connections")
     await engine.dispose()
+
+
+def _run_alembic_upgrade() -> None:
+    """Run Alembic migrations to head in a blocking worker thread."""
+    from alembic import command
+    from alembic.config import Config
+
+    project_root = Path(__file__).resolve().parents[2]
+    config = Config(str(project_root / "alembic.ini"))
+    config.set_main_option("script_location", str(project_root / "alembic"))
+    command.upgrade(config, "head")
