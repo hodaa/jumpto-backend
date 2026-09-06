@@ -155,6 +155,7 @@ async def internal_store_transcript(
         video.id,
         transcript=request.transcript_text,
         language=request.language,
+        provider=request.provider,
     )
     await session.commit()
     return InternalStatusResponse(status=job.status)

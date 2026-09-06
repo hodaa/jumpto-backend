@@ -35,6 +35,7 @@ class Video(Base):
     title: Mapped[str | None] = mapped_column(String(500), nullable=True)
     duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     language: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    provider: Mapped[str] = mapped_column(String(50), nullable=False, default="")
     transcript: Mapped[str | None] = mapped_column(Text, nullable=True)
     transcript_tsvector: Mapped[str | None] = mapped_column(TSVECTOR, nullable=True)
     transcribed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

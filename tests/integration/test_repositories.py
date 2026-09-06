@@ -78,12 +78,15 @@ class TestVideoRepository:
         video = await _make_video(db_session)
         repo = VideoRepository(db_session)
 
-        result = await repo.update_transcript(video.id, transcript="hello world", language="ar")
+        result = await repo.update_transcript(
+            video.id, transcript="hello world", language="ar", provider="vidwords"
+        )
         await db_session.flush()
         await db_session.refresh(result)
 
         assert result.transcript == "hello world"
         assert result.language == "ar"
+        assert result.provider == "vidwords"
         assert result.transcribed_at is not None
 
         with pytest.raises(ValueError):

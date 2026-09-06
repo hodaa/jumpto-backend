@@ -152,6 +152,9 @@ class InternalStoreTranscriptRequest(BaseModel):
     duration_seconds: int = Field(..., ge=0, description="Video duration in seconds")
     language: str = Field(default="en", min_length=1, description="Transcript language code")
     transcript_text: str = Field(..., min_length=1, description="Full transcript text")
+    provider: str = Field(
+        default="", max_length=50, description="Provider that produced the transcript"
+    )
     words: list[InternalWordData] = Field(default_factory=list, description="Per-word timestamps")
 
 

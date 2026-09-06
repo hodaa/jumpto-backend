@@ -65,14 +65,20 @@ class VideoRepository:
         return video
 
     async def update_transcript(
-        self, video_id: UUID, *, transcript: str, language: str | None = None
+        self,
+        video_id: UUID,
+        *,
+        transcript: str,
+        language: str | None = None,
+        provider: str = "",
     ) -> Video:
-        """Store transcript text, language and full-text vector for a video."""
+        """Store transcript text, language, provider and full-text vector."""
         video = await self.get_by_id(video_id)
         if not video:
             raise ValueError(f"Video {video_id} not found")
         video.transcript = transcript
         video.language = language
+        video.provider = provider
         video.transcript_tsvector = func.to_tsvector("english", transcript)
         video.transcribed_at = func.now()
         await self.session.flush()

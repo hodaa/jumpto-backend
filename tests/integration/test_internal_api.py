@@ -126,6 +126,7 @@ class TestInternalLifecycle:
                 "duration_seconds": 120,
                 "language": "en",
                 "transcript_text": "hello world",
+                "provider": "supadata",
                 "words": [
                     {"word_index": 0, "word": "hello", "start_time": 0.0, "end_time": 0.5},
                     {"word_index": 1, "word": "world", "start_time": 0.5, "end_time": 1.0},
@@ -141,6 +142,7 @@ class TestInternalLifecycle:
         assert video.duration_seconds == 120
         assert video.language == "en"
         assert video.transcript == "hello world"
+        assert video.provider == "supadata"
         assert video.transcribed_at is not None
 
     @pytest.mark.asyncio
