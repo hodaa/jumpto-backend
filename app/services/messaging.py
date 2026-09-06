@@ -11,37 +11,33 @@ _WORKER_TASK_NAME = "app.tasks.transcription.download_and_transcribe"
 
 _settings = get_settings()
 
-_redis_url = _settings.redis_url
-if _redis_url.startswith("rediss://"):
-    separator = "&" if "?" in _redis_url else "?"
-    _redis_url = f"{_redis_url}{separator}ssl_cert_reqs=CERT_REQUIRED"
+broker_url = _settings.broker_url
 
-celery_app = Celery(
-    "jumpto",
-    broker=_redis_url,
-    backend=_redis_url,
-)
+# Redis over TLS: kombu reads the query param and needs broker_use_ssl too.
+if broker_url.startswith("rediss://"):
+    separator = "&" if "?" in broker_url else "?"
+    broker_url = f"{broker_url}{separator}ssl_cert_reqs=CERT_REQUIRED"
 
-_redis_url = _settings.redis_url
+celery_app = Celery("jumpto", broker=broker_url)
 
-if _redis_url.startswith("rediss://"):
-    separator = "&" if "?" in _redis_url else "?"
-    _redis_url = f"{_redis_url}{separator}ssl_cert_reqs=CERT_REQUIRED"
-
-celery_app = Celery(
-    "jumpto",
-    broker=_redis_url,
-    backend=_redis_url,
-)
-
-if _redis_url.startswith("rediss://"):
+if broker_url.startswith("rediss://"):
     celery_app.conf.broker_use_ssl = {
         "ssl_cert_reqs": ssl.CERT_REQUIRED,
     }
-
     celery_app.conf.result_backend_transport_options = {
         "ssl_cert_reqs": ssl.CERT_REQUIRED,
     }
+elif broker_url.startswith("amqps://"):
+    # The amqp/pyamqp transport expects amqp-style ssl options (cert_reqs,
+    # not redis's ssl_cert_reqs) and loads the system CA store when none is
+    # given, so a plain cert_reqs verifies against trusted CAs.
+    celery_app.conf.broker_use_ssl = {
+        "cert_reqs": ssl.CERT_REQUIRED,
+    }
+
+celery_app.conf.broker_connection_retry_on_startup = True
+
+celery_app.conf.result_backend = None
 
 celery_app.conf.update(
     task_serializer="json",

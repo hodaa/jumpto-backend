@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BeforeValidator, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -39,7 +39,17 @@ class Settings(BaseSettings):
     # Redis
     redis_url: str = Field(
         default="redis://localhost:6379/0",
-        description="Redis connection URL",
+        description="Redis connection URL used as the Celery broker (when QUEUE_PROVIDER=redis)",
+    )
+
+    # Celery / broker
+    queue_provider: Literal["redis", "rabbitmq"] = Field(
+        default="redis",
+        description="Celery broker transport: redis or rabbitmq (QUEUE_PROVIDER env var)",
+    )
+    rabbitmq_url: str = Field(
+        default="amqp://guest:guest@localhost:5672//",
+        description="RabbitMQ connection URL used as the Celery broker (when QUEUE_PROVIDER=rabbitmq)",
     )
 
     # Job / transcription timeout
@@ -88,6 +98,13 @@ class Settings(BaseSettings):
     def cors_origin_list(self) -> list[str]:
         """Parse CORS origins into a list."""
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    @property
+    def broker_url(self) -> str:
+        """Return the Celery broker URL for the configured queue provider."""
+        if self.queue_provider == "rabbitmq":
+            return self.rabbitmq_url
+        return self.redis_url
 
     @property
     def is_development(self) -> bool:
