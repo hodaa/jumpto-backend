@@ -16,6 +16,7 @@ from app.core.exceptions import (
     generic_exception_handler,
     http_exception_handler,
 )
+from app.core.gzip_request import GzipRequestBodyMiddleware
 from app.core.logging import configure_logging, get_logger
 
 logger = get_logger(__name__)
@@ -53,6 +54,9 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Decompress worker gzip request bodies (large transcript POSTs).
+    app.add_middleware(GzipRequestBodyMiddleware)
 
     # Exception handlers
     app.add_exception_handler(DomainError, domain_error_handler)
