@@ -79,6 +79,30 @@ class VideoSearchResponse(BaseModel):
     results: list[TimestampResult] = Field(default_factory=list)
 
 
+class VideoSearchResult(BaseModel):
+    """A video matching a catalog-wide full-text search."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    video_id: UUID
+    youtube_video_id: str
+    youtube_url: str
+    title: str | None = Field(None, description="Video title")
+    duration_seconds: int | None = Field(None, description="Video duration in seconds")
+    snippet: str | None = Field(None, description="ts_headline snippet around the match")
+    rank: float = Field(0.0, description="ts_rank relevance score")
+
+
+class FullTextSearchResponse(BaseModel):
+    """Response schema for GET /api/videos/search."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    status: SearchStatus = SearchStatus.FOUND
+    query: str
+    results: list[VideoSearchResult] = Field(default_factory=list)
+
+
 class StatusResponse(BaseModel):
     """Response schema for GET /api/status/{job_id}."""
 

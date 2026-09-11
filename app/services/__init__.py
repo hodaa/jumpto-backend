@@ -1,5 +1,6 @@
 """Services package exports."""
 
+from app.services.fulltext import FullTextSearchService
 from app.services.job import JobService
 from app.services.language import normalize_language
 from app.services.search import SearchService
@@ -11,6 +12,7 @@ from app.services.youtube import (
 )
 
 __all__ = [
+    "FullTextSearchService",
     "JobService",
     "SearchService",
     "YouTubeVideoInfo",

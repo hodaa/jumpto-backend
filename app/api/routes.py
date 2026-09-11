@@ -13,6 +13,7 @@ from app.core.exceptions import VideoNotFoundError, VideoNotTranscribedError
 from app.models import Video
 from app.repositories import JobRepository, TranscriptWordRepository, VideoRepository
 from app.schemas import (
+    FullTextSearchResponse,
     SearchRequest,
     SearchResponse,
     SearchResponseCached,
@@ -21,7 +22,12 @@ from app.schemas import (
     StatusResponse,
     VideoSearchResponse,
 )
-from app.services import JobService, SearchService, validate_youtube_url
+from app.services import (
+    FullTextSearchService,
+    JobService,
+    SearchService,
+    validate_youtube_url,
+)
 from app.services.messaging import dispatch_transcription
 
 router = APIRouter()
@@ -49,6 +55,13 @@ def get_search_service(
 ) -> SearchService:
     """Build the search service."""
     return SearchService(transcript_repo)
+
+
+def get_fulltext_service(
+    video_repo: VideoRepository = Depends(get_video_repo),
+) -> FullTextSearchService:
+    """Build the full-text catalog search service."""
+    return FullTextSearchService(video_repo)
 
 
 def get_job_service(
@@ -165,6 +178,27 @@ async def search_video(
     if not results:
         return VideoSearchResponse(status=SearchStatus.NOT_FOUND, results=[])
     return VideoSearchResponse(status="found", results=results)
+
+
+@router.get(
+    "/api/videos/search",
+    response_model=FullTextSearchResponse,
+    responses={422: {"description": "Validation error"}},
+)
+async def search_videos_by_text(
+    q: str = Query(..., min_length=1, max_length=200, description="Full-text query"),
+    limit: int = Query(10, ge=1, le=50, description="Max results"),
+    fulltext_service: FullTextSearchService = Depends(get_fulltext_service),
+) -> FullTextSearchResponse:
+    """Search transcribed videos by transcript content via PostgreSQL FTS.
+
+    Query semantics follow ``websearch_to_tsquery``: plain words AND together,
+    an explicit ``OR`` unions terms, double-quoted phrases match exactly,
+    and stemming is applied.
+    """
+    results = await fulltext_service.search(q, limit=limit)
+    status = SearchStatus.FOUND if results else SearchStatus.NOT_FOUND
+    return FullTextSearchResponse(status=status, query=q.strip(), results=results)
 
 
 async def _get_or_create_video(

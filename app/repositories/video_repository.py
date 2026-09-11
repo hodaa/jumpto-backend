@@ -1,6 +1,8 @@
+from collections.abc import Sequence
 from uuid import UUID
 
 from sqlalchemy import func, select
+from sqlalchemy.engine import RowMapping
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import defer
 
@@ -8,6 +10,9 @@ from app.core.logging import get_logger
 from app.models import Video
 
 logger = get_logger(__name__)
+
+_FTS_CONFIG = "english"
+_FTS_SNIPPET_OPTIONS = "StartSel=<mark>, StopSel=</mark>, MinWords=12, MaxWords=20"
 
 
 class VideoRepository:
@@ -111,3 +116,40 @@ class VideoRepository:
         )
         transcribed_at = result.scalar_one_or_none()
         return transcribed_at is not None
+
+    async def search_full_text(
+        self,
+        query: str,
+        *,
+        limit: int = 10,
+        config: str = _FTS_CONFIG,
+    ) -> Sequence[RowMapping]:
+        """Search transcribed videos by transcript full-text relevance.
+
+        Uses the GIN index on ``transcript_tsvector``; results are ranked by
+        ``ts_rank`` and carry a ``ts_headline`` snippet around the first hit.
+        """
+        tsquery = func.websearch_to_tsquery(config, query)
+        tsvector = Video.transcript_tsvector
+        rank = func.ts_rank(tsvector, tsquery)
+        stmt = (
+            select(
+                Video.id.label("video_id"),
+                Video.video_id.label("youtube_video_id"),
+                Video.youtube_url,
+                Video.title,
+                Video.duration_seconds,
+                rank.label("rank"),
+                func.ts_headline(
+                    config,
+                    Video.transcript,
+                    tsquery,
+                    _FTS_SNIPPET_OPTIONS,
+                ).label("snippet"),
+            )
+            .where(tsvector.op("@@", is_comparison=True)(tsquery))
+            .order_by(rank.desc())
+            .limit(limit)
+        )
+        result = await self.session.execute(stmt)
+        return list(result.mappings().all())
