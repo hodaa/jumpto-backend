@@ -83,7 +83,7 @@ class TranscriptWord(Base):
         nullable=False,
     )
     word_index: Mapped[int] = mapped_column(Integer, nullable=False)
-    word: Mapped[str] = mapped_column(String(100), nullable=False)
+    word: Mapped[str] = mapped_column(String(500), nullable=False)
     start_time: Mapped[float] = mapped_column(Float, nullable=False)
     end_time: Mapped[float] = mapped_column(Float, nullable=False)
 

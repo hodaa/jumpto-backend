@@ -134,6 +134,7 @@ async def internal_store_transcript(
     if not video:
         raise VideoNotFoundError(str(job.video_id))
 
+    await word_repo.delete_by_video_id(video.id)
     words = [
         TranscriptWord(
             video_id=video.id,

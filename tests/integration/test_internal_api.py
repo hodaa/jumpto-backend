@@ -4,6 +4,7 @@ from uuid import uuid4
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -144,6 +145,41 @@ class TestInternalLifecycle:
         assert video.transcript == "hello world"
         assert video.provider == "supadata"
         assert video.transcribed_at is not None
+
+    @pytest.mark.asyncio
+    async def test_store_transcript_idempotent_on_retry(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """A second store for the same video replaces prior words instead of 500ing."""
+        video, job = await _create_job_with_video(db_session, status=JobStatus.PROCESSING)
+        payload = {
+            "title": "Video Title",
+            "duration_seconds": 120,
+            "language": "en",
+            "transcript_text": "hello world lorem ipsum",
+            "provider": "yt-dlp",
+            "words": [
+                {"word_index": 0, "word": "hello", "start_time": 0.0, "end_time": 0.5},
+                {"word_index": 1, "word": "world", "start_time": 0.5, "end_time": 1.0},
+            ],
+        }
+
+        first = await client.post(
+            f"/internal/jobs/{job.id}/transcript", json=payload, headers=_headers()
+        )
+        assert first.status_code == 200
+
+        payload["words"][0]["word"] = "hi"
+        second = await client.post(
+            f"/internal/jobs/{job.id}/transcript", json=payload, headers=_headers()
+        )
+        assert second.status_code == 200
+
+        result = await db_session.execute(
+            text("SELECT word FROM transcript_words WHERE video_id = :vid ORDER BY word_index"),
+            {"vid": video.id},
+        )
+        assert result.scalars().all() == ["hi", "world"]
 
     @pytest.mark.asyncio
     async def test_complete_missing_job_returns_404(self, client: AsyncClient) -> None:

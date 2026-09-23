@@ -1,7 +1,7 @@
 from collections.abc import Sequence
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
@@ -21,6 +21,13 @@ class TranscriptWordRepository:
         self.session.add_all(words)
         await self.session.flush()
         logger.info("Bulk created transcript words", count=len(words))
+
+    async def delete_by_video_id(self, video_id: UUID) -> None:
+        """Delete all transcript words for a video."""
+        await self.session.execute(
+            delete(TranscriptWord).where(TranscriptWord.video_id == video_id)
+        )
+        await self.session.flush()
 
     async def search_exact_phrase(
         self,
