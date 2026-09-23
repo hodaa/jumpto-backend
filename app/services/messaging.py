@@ -51,3 +51,19 @@ celery_app.conf.update(
 def dispatch_transcription(job_id: UUID) -> None:
     """Publish a transcription job to the worker's queue."""
     celery_app.send_task(_WORKER_TASK_NAME, args=[str(job_id)])
+
+
+def dispatch_resume_transcription(job_id: UUID, resume_token: str, resume_provider: str) -> None:
+    """Publish a resume of an Assembly.ai job to the worker's queue.
+
+    The worker task re-runs ``download_and_transcribe`` with a ``resume_token``
+    so it polls the Assembly.ai transcript instead of re-downloading audio.
+    """
+    celery_app.send_task(
+        _WORKER_TASK_NAME,
+        args=[str(job_id)],
+        kwargs={
+            "resume_token": resume_token,
+            "resume_provider": resume_provider,
+        },
+    )

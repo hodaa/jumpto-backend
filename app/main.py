@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.internal import router as internal_router
 from app.api.routes import router as api_router
+from app.api.webhooks import router as webhook_router
 from app.core.config import get_settings
 from app.core.database import close_db, init_db
 from app.core.exceptions import (
@@ -66,6 +67,7 @@ def create_app() -> FastAPI:
     # Include routers
     app.include_router(api_router)
     app.include_router(internal_router)
+    app.include_router(webhook_router)
 
     # Health check endpoints
     @app.get("/")

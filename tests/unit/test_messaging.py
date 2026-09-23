@@ -26,6 +26,32 @@ class TestDispatchTranscription:
         ]
 
 
+class TestDispatchResumeTranscription:
+    """Tests for publishing Assembly resume jobs to the worker queue."""
+
+    def test_sends_worker_task_with_resume_kwargs(self, monkeypatch) -> None:
+        sent = []
+        monkeypatch.setattr(
+            messaging.celery_app,
+            "send_task",
+            lambda name, args=None, kwargs=None: sent.append((name, args, kwargs)),
+        )
+
+        messaging.dispatch_resume_transcription(
+            UUID("12345678-1234-5678-1234-567812345678"),
+            resume_token="asm-123",
+            resume_provider="yt-dlp",
+        )
+
+        assert sent == [
+            (
+                "app.tasks.transcription.download_and_transcribe",
+                ["12345678-1234-5678-1234-567812345678"],
+                {"resume_token": "asm-123", "resume_provider": "yt-dlp"},
+            )
+        ]
+
+
 class TestCeleryAppConfiguration:
     """Tests for the Celery app configuration."""
 

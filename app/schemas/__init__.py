@@ -214,3 +214,25 @@ class InternalStatusResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     status: str
+
+
+class AssemblyWebhookStatus(str, Enum):
+    """Assembly.ai webhook status values."""
+
+    COMPLETED = "completed"
+    ERROR = "error"
+
+
+class AssemblyWebhookRequest(BaseModel):
+    """Completion callback payload sent by Assembly.ai."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    transcript_id: str = Field(..., min_length=1, description="Assembly transcript id")
+    status: AssemblyWebhookStatus = Field(..., description="Assembly job status")
+
+
+class WebhookAckResponse(BaseModel):
+    """Acknowledgment returned to provider completion webhooks."""
+
+    status: str = Field(..., description="Ack status (ok)")
