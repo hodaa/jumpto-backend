@@ -1,7 +1,7 @@
 """SQLAlchemy models for the application."""
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import (
     DateTime,
@@ -99,6 +99,31 @@ class TranscriptWord(Base):
         return (
             f"<TranscriptWord(video_id={self.video_id}, word={self.word}, index={self.word_index})>"
         )
+
+
+class ContactMessage(Base):
+    """Contact form message sent from the public website."""
+
+    __tablename__ = "contact_messages"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    email: Mapped[str] = mapped_column(String(254), nullable=False, index=True)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+
+    __table_args__ = (Index("idx_contact_messages_created_at", "created_at"),)
+
+    def __repr__(self) -> str:
+        return f"<ContactMessage(id={self.id}, email={self.email})>"
 
 
 class Job(Base):

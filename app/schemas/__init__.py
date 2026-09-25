@@ -1,11 +1,49 @@
 """Pydantic schemas for request/response validation."""
 
+import re
 from datetime import datetime
 from enum import Enum
 from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
+
+_EMAIL_PATTERN = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
+
+
+class ContactRequest(BaseModel):
+    """Request schema for POST /api/contact."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str = Field(..., min_length=1, max_length=100, description="Sender display name")
+    email: str = Field(..., min_length=1, max_length=254, description="Sender email address")
+    message: str = Field(..., min_length=1, max_length=500, description="Message body")
+
+    @field_validator("name", "message")
+    @classmethod
+    def reject_blank_text(cls, v: str) -> str:
+        """Reject text that is only whitespace."""
+        if not v.strip():
+            raise ValueError("Value cannot be empty or whitespace only")
+        return v.strip()
+
+    @field_validator("email")
+    @classmethod
+    def validate_email_format(cls, v: str) -> str:
+        """Reject malformed email addresses and normalize to lowercase."""
+        if not _EMAIL_PATTERN.fullmatch(v):
+            raise ValueError("Email must be a valid address")
+        return v.lower()
+
+
+class ContactResponse(BaseModel):
+    """Response schema for POST /api/contact."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    created_at: datetime
 
 
 class JobStatus(str, Enum):

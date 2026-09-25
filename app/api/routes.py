@@ -11,8 +11,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db_session
 from app.core.exceptions import VideoNotFoundError, VideoNotTranscribedError
 from app.models import Video
-from app.repositories import JobRepository, TranscriptWordRepository, VideoRepository
+from app.repositories import (
+    ContactRepository,
+    JobRepository,
+    TranscriptWordRepository,
+    VideoRepository,
+)
 from app.schemas import (
+    ContactRequest,
+    ContactResponse,
     FullTextSearchResponse,
     SearchRequest,
     SearchResponse,
@@ -48,6 +55,11 @@ def get_transcript_repo(
 def get_job_repo(session: AsyncSession = Depends(get_db_session)) -> JobRepository:
     """Build a job repository for the request session."""
     return JobRepository(session)
+
+
+def get_contact_repo(session: AsyncSession = Depends(get_db_session)) -> ContactRepository:
+    """Build a contact repository for the request session."""
+    return ContactRepository(session)
 
 
 def get_search_service(
@@ -120,6 +132,30 @@ async def search(
         status_code=status.HTTP_202_ACCEPTED,
         content=response.model_dump(mode="json"),
     )
+
+
+@router.post(
+    "/api/contact",
+    response_model=ContactResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        201: {"model": ContactResponse, "description": "Contact message stored"},
+        422: {"description": "Validation error"},
+    },
+)
+async def create_contact_message(
+    request: ContactRequest,
+    contact_repo: ContactRepository = Depends(get_contact_repo),
+    session: AsyncSession = Depends(get_db_session),
+) -> ContactResponse:
+    """Store a contact form message from the public website."""
+    record = await contact_repo.create(
+        name=request.name,
+        email=request.email,
+        message=request.message,
+    )
+    await session.commit()
+    return ContactResponse(id=record.id, created_at=record.created_at)
 
 
 @router.get(

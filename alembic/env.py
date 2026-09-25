@@ -16,7 +16,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 from app.core.config import get_settings
 from app.core.database import Base, build_async_database_url
-from app.models import Job, TranscriptWord, Video  # noqa: F401
+from app.models import ContactMessage, Job, TranscriptWord, Video  # noqa: F401
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

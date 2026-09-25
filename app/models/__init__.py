@@ -1,3 +1,3 @@
-from .models import Job, TranscriptWord, Video
+from .models import ContactMessage, Job, TranscriptWord, Video
 
-__all__ = ["Video", "TranscriptWord", "Job"]
+__all__ = ["ContactMessage", "Video", "TranscriptWord", "Job"]
