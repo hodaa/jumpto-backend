@@ -120,10 +120,10 @@ Search cached transcript for specific video.
 | REDIS_URL | Redis connection URL | `redis://localhost:6379/0` |
 | CORS_ORIGINS | Allowed CORS origins (comma-separated) | `http://localhost:5173` |
 | ENVIRONMENT | `development` or `production` | `development` |
-| JUMPTO_LIVE_EXTERNAL_CALLS | Enable live yt-dlp/Assembly.ai | `false` |
-| JUMPTO_TRANSCRIPT_MODE | `real` or `fake` | `real` |
+| LIVE_EXTERNAL_CALLS | Enable live yt-dlp/Assembly.ai | `false` |
+| TRANSCRIPT_MODE | `real` or `fake` | `real` |
 
-Set `JUMPTO_TRANSCRIPT_MODE=fake` to run without an Assembly.ai key (downloads are skipped and a fake transcript is used in dev).
+Set `TRANSCRIPT_MODE=fake` to run without an Assembly.ai key (downloads are skipped and a fake transcript is used in dev).
 
 ## Production Deployment (Vercel + Render)
 
@@ -142,12 +142,12 @@ database**:
 2. **Database**: set the Neon `DATABASE_URL` on both. `sslmode=...` query params
    are supported (translated to asyncpg's `ssl`); `channel_binding` is stripped.
 3. **Transcription**: set `ASSEMBLY_API_KEY`,
-   `JUMPTO_LIVE_EXTERNAL_CALLS=true`, `JUMPTO_TRANSCRIPT_MODE=real`, and
+   `LIVE_EXTERNAL_CALLS=true`, `TRANSCRIPT_MODE=real`, and
    `ENVIRONMENT=production` on the worker.
 
 Vercel API env: `DATABASE_URL`, `REDIS_URL`, `CORS_ORIGINS`, `ENVIRONMENT`.
 Render worker env: `DATABASE_URL`, `REDIS_URL`, `ASSEMBLY_API_KEY`,
-`JUMPTO_LIVE_EXTERNAL_CALLS`, `JUMPTO_TRANSCRIPT_MODE`, `ENVIRONMENT`.
+`LIVE_EXTERNAL_CALLS`, `TRANSCRIPT_MODE`, `ENVIRONMENT`.
 
 ## Database Migrations on Deploy
 

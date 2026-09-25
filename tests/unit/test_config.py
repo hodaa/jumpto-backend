@@ -49,3 +49,27 @@ class TestBrokerUrl:
         monkeypatch.setenv("QUEUE_PROVIDER", "kafka")
         with pytest.raises(ValidationError):
             Settings(_env_file=None)
+
+
+class TestLiveExternalCallsSetting:
+    """Tests for the live external calls gate setting."""
+
+    def test_defaults_to_false(self, monkeypatch) -> None:
+        monkeypatch.delenv("LIVE_EXTERNAL_CALLS", raising=False)
+        assert Settings(_env_file=None).live_external_calls is False
+
+    def test_reads_env_var(self, monkeypatch) -> None:
+        monkeypatch.setenv("LIVE_EXTERNAL_CALLS", "true")
+        assert Settings(_env_file=None).live_external_calls is True
+
+
+class TestTranscriptModeSetting:
+    """Tests for the transcript mode setting."""
+
+    def test_defaults_to_real(self, monkeypatch) -> None:
+        monkeypatch.delenv("TRANSCRIPT_MODE", raising=False)
+        assert Settings(_env_file=None).transcript_mode == "real"
+
+    def test_reads_env_var(self, monkeypatch) -> None:
+        monkeypatch.setenv("TRANSCRIPT_MODE", "fake")
+        assert Settings(_env_file=None).transcript_mode == "fake"

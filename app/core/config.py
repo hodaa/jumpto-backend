@@ -84,12 +84,12 @@ class Settings(BaseSettings):
     )
 
     # External calls
-    jumpto_live_external_calls: Annotated[bool, BeforeValidator(_coerce_bool)] = Field(
+    live_external_calls: Annotated[bool, BeforeValidator(_coerce_bool)] = Field(
         default=False,
         description="Enable live external API calls (yt-dlp, Assembly.ai)",
     )
     # Transcript mode
-    jumpto_transcript_mode: str = Field(
+    transcript_mode: str = Field(
         default="real",
         description="Transcript mode: real or fake",
     )

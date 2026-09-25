@@ -13,8 +13,8 @@ from sqlalchemy.pool import NullPool
 # Live transcription now lives in the standalone worker repo, so the backend
 # test suite must not depend on the ambient .env for tests that assert the
 # fake/offline corpus.
-os.environ["JUMPTO_LIVE_EXTERNAL_CALLS"] = "false"
-os.environ["JUMPTO_TRANSCRIPT_MODE"] = "fake"
+os.environ["LIVE_EXTERNAL_CALLS"] = "false"
+os.environ["TRANSCRIPT_MODE"] = "fake"
 
 from app.core.config import get_settings  # noqa: E402
 from app.core.database import Base, get_db_session  # noqa: E402
