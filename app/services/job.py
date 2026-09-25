@@ -85,12 +85,14 @@ class JobService:
         """
         return await self.job_repo.update_status(job_id, progress=progress)
 
-    async def complete_job(self, job_id: UUID) -> Job:
+    async def complete_job(self, job_id: UUID, error: str | None = None) -> Job:
         """
         Mark job as completed.
 
         Args:
             job_id: Job UUID
+            error: Optional outcome note stored on the job (surfaced via the
+                public status endpoint, e.g. "no speech detected in this video")
 
         Returns:
             Updated job
@@ -99,6 +101,7 @@ class JobService:
             job_id,
             status=JobStatus.COMPLETED,
             progress=100,
+            error=error,
         )
 
     async def fail_job(self, job_id: UUID, error: str) -> Job:

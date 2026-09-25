@@ -115,6 +115,25 @@ class TestInternalLifecycle:
         assert fail.json()["status"] == "failed"
 
     @pytest.mark.asyncio
+    async def test_complete_with_message_stores_error_note(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        _, job = await _create_job_with_video(db_session)
+
+        complete = await client.post(
+            f"/internal/jobs/{job.id}/complete",
+            json={"message": "No speech detected in this video."},
+            headers=_headers(),
+        )
+        assert complete.status_code == 200
+        assert complete.json()["status"] == "completed"
+
+        status = await client.get(f"/api/status/{job.id}", headers=_headers())
+        assert status.status_code == 200
+        assert status.json()["status"] == "completed"
+        assert status.json()["error"] == "No speech detected in this video."
+
+    @pytest.mark.asyncio
     async def test_store_transcript_updates_video(
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:

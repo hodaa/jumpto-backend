@@ -12,6 +12,7 @@ from app.core.exceptions import VideoNotFoundError
 from app.models import TranscriptWord
 from app.repositories import JobRepository, TranscriptWordRepository, VideoRepository
 from app.schemas import (
+    InternalCompleteRequest,
     InternalFailRequest,
     InternalJobResponse,
     InternalProgressRequest,
@@ -169,12 +170,16 @@ async def internal_store_transcript(
 )
 async def internal_complete_job(
     job_id: UUID,
+    request: InternalCompleteRequest | None = None,
     job_service: JobService = Depends(_get_job_service),
     session: AsyncSession = Depends(get_db_session),
 ) -> InternalStatusResponse:
-    """Mark a job as completed."""
+    """Mark a job as completed, optionally carrying an outcome note."""
     await job_service.get_job(job_id)
-    job = await job_service.complete_job(job_id)
+    job = await job_service.complete_job(
+        job_id,
+        error=request.message if request else None,
+    )
     await session.commit()
     return InternalStatusResponse(status=job.status)
 

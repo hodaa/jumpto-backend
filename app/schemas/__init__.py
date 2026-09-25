@@ -234,6 +234,18 @@ class InternalProgressRequest(BaseModel):
     progress: int = Field(..., ge=1, le=99, description="Intermediate progress percent")
 
 
+class InternalCompleteRequest(BaseModel):
+    """Request schema for POST /internal/jobs/{job_id}/complete."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    message: str | None = Field(
+        default=None,
+        max_length=500,
+        description="Optional outcome note (e.g. no speech detected) stored on the job",
+    )
+
+
 class InternalJobResponse(BaseModel):
     """Response schema for GET /internal/jobs/{job_id}."""
 
