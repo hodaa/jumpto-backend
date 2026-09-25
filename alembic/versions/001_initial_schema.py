@@ -1,22 +1,23 @@
 """Initial schema
 
 Revision ID: 001
-Revises: 
+Revises:
 Create Date: 2024-01-01 00:00:00
 
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
+from alembic import op
+
 # revision identifiers, used by Alembic.
 revision: str = "001"
-down_revision: Union[str, None] = None
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = None
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -94,8 +95,8 @@ def upgrade() -> None:
     # Create unique partial index for in-flight jobs (one per video)
     op.execute(
         """
-        CREATE UNIQUE INDEX uq_jobs_video_in_flight 
-        ON jobs (video_id) 
+        CREATE UNIQUE INDEX uq_jobs_video_in_flight
+        ON jobs (video_id)
         WHERE status IN ('pending', 'processing')
     """
     )

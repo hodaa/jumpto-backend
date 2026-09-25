@@ -5,9 +5,9 @@ import json
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from starlette.responses import JSONResponse
 
 from app.core.gzip_request import GzipRequestBodyMiddleware
-from starlette.responses import JSONResponse
 
 
 @pytest.mark.asyncio
