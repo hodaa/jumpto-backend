@@ -96,18 +96,32 @@ class VideoRepository:
         language: str | None = None,
         provider: str = "",
     ) -> Video:
-        """Store transcript text, language, provider and full-text vector."""
+        """Store transcript text, language, provider and full-text vector.
+
+        An empty transcript (no speech detected) is stored as a NULL row: the
+        video counts as transcribed so repeat searches never re-queue a job,
+        but it stays out of full-text search and reads back as ``null`` so the
+        UI can tell "no speech" from "no match".
+        """
         video = await self.session.get(Video, video_id)
         if not video:
             raise ValueError(f"Video {video_id} not found")
-        video.transcript = transcript
+        video.transcript = transcript if transcript and transcript.strip() else None
         video.language = language
         video.provider = provider
-        video.transcript_tsvector = func.to_tsvector("english", transcript)
+        video.transcript_tsvector = (
+            func.to_tsvector("english", transcript) if video.transcript is not None else None
+        )
         video.transcribed_at = func.now()
         await self.session.flush()
         logger.info("Updated video transcript", video_id=video_id)
         return video
+
+    async def has_speech_text(self, video_id: UUID) -> bool:
+        """True when the video's stored transcript contains real speech."""
+        result = await self.session.execute(select(Video.transcript).where(Video.id == video_id))
+        transcript = result.scalar_one_or_none()
+        return bool(transcript and transcript.strip())
 
     async def is_transcribed(self, video_id: UUID) -> bool:
         """Check if video has been transcribed."""

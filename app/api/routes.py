@@ -113,8 +113,13 @@ async def search(
 
     if video and video.transcribed_at:
         results = await search_service.search(video.id, request.keyword)
+        # A transcribed video with a null transcript has no speech/sound at all;
+        # surface that distinctly from "keyword not found in a real transcript".
+        no_speech = not results and not await video_repo.has_speech_text(video.id)
         if not results:
-            return SearchResponseCached(status=SearchStatus.NOT_FOUND, results=[])
+            return SearchResponseCached(
+                status=SearchStatus.NOT_FOUND, results=[], no_speech=no_speech
+            )
         return SearchResponseCached(status="found", results=results)
 
     if not video:
@@ -212,7 +217,8 @@ async def search_video(
 
     results = await search_service.search(video_id, keyword.strip())
     if not results:
-        return VideoSearchResponse(status=SearchStatus.NOT_FOUND, results=[])
+        no_speech = not await video_repo.has_speech_text(video_id)
+        return VideoSearchResponse(status=SearchStatus.NOT_FOUND, results=[], no_speech=no_speech)
     return VideoSearchResponse(status="found", results=results)
 
 

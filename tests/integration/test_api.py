@@ -168,6 +168,7 @@ class TestHealthEndpoint:
         assert response.status_code == 200
         assert response.json() == {"status": "healthy"}
 
+
 class TestNoResults:
     """Tests for the not_found status when no matches are found."""
 
@@ -217,6 +218,39 @@ class TestNoResults:
         data = response.json()
         assert data["status"] == "not_found"
         assert data["results"] == []
+        assert data["no_speech"] is False
+
+    @pytest.mark.asyncio
+    async def test_post_search_no_speech_video_reports_no_speech(
+        self,
+        client: AsyncClient,
+        db_session,
+    ) -> None:
+        """A transcribed-but-silent video (null transcript) reports no_speech
+        so the client can show "no speech or sound" instead of "no match"."""
+        from datetime import UTC, datetime
+
+        video_id = "nospeechvid"
+        video = Video(
+            youtube_url=f"https://www.youtube.com/watch?v={video_id}",
+            video_id=video_id,
+            title="Silent Video",
+            language="en",
+            transcript=None,
+            transcribed_at=datetime.now(UTC),
+        )
+        db_session.add(video)
+        await db_session.flush()
+
+        response = await client.post(
+            "/api/search",
+            json={"youtube_url": video.youtube_url, "keyword": "hello"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "not_found"
+        assert data["results"] == []
+        assert data["no_speech"] is True
 
     @pytest.mark.asyncio
     async def test_post_search_existing_keyword_still_returns_found(

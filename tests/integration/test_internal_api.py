@@ -166,6 +166,35 @@ class TestInternalLifecycle:
         assert video.transcribed_at is not None
 
     @pytest.mark.asyncio
+    async def test_store_no_speech_transcript_stores_null(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """An empty transcript is accepted (no 422) and stored as a NULL row:
+        the video is transcribed-but-silent, so it never re-queues a job yet
+        has no searchable content."""
+        video, job = await _create_job_with_video(db_session, status=JobStatus.PROCESSING)
+
+        response = await client.post(
+            f"/internal/jobs/{job.id}/transcript",
+            json={
+                "title": "Silent Video",
+                "duration_seconds": 60,
+                "language": "ar",
+                "transcript_text": "",
+                "provider": "yt-dlp",
+                "words": [],
+            },
+            headers=_headers(),
+        )
+
+        assert response.status_code == 200
+
+        await db_session.refresh(video)
+        assert video.transcript is None
+        assert video.transcript_tsvector is None
+        assert video.transcribed_at is not None
+
+    @pytest.mark.asyncio
     async def test_store_transcript_idempotent_on_retry(
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:

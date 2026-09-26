@@ -96,6 +96,10 @@ class SearchResponseCached(BaseModel):
 
     status: SearchStatus = SearchStatus.FOUND
     results: list[TimestampResult] = Field(default_factory=list)
+    no_speech: bool = Field(
+        default=False,
+        description="Video is transcribed but contains no speech or sound (null transcript)",
+    )
 
 
 class SearchResponseProcessing(BaseModel):
@@ -115,6 +119,10 @@ class VideoSearchResponse(BaseModel):
 
     status: SearchStatus = SearchStatus.FOUND
     results: list[TimestampResult] = Field(default_factory=list)
+    no_speech: bool = Field(
+        default=False,
+        description="Video is transcribed but contains no speech or sound (null transcript)",
+    )
 
 
 class VideoSearchResult(BaseModel):
@@ -213,7 +221,10 @@ class InternalStoreTranscriptRequest(BaseModel):
     title: str = Field(..., min_length=1, description="Video title")
     duration_seconds: int = Field(..., ge=0, description="Video duration in seconds")
     language: str = Field(default="en", min_length=1, description="Transcript language code")
-    transcript_text: str = Field(..., min_length=1, description="Full transcript text")
+    transcript_text: str = Field(
+        default="",
+        description="Full transcript text; empty means the video has no speech",
+    )
     provider: str = Field(
         default="", max_length=50, description="Provider that produced the transcript"
     )
