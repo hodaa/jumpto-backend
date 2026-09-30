@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from functools import lru_cache
 from typing import Annotated, Literal
 
@@ -94,6 +95,78 @@ class Settings(BaseSettings):
         description="Transcript mode: real or fake",
     )
 
+    # Sessions
+    session_cookie_name: str = Field(
+        default="__Host-jumpto_session",
+        description="Session cookie name. The __Host- prefix makes browsers enforce Secure/Path=/.",
+    )
+    session_absolute_ttl_days: int = Field(
+        default=30,
+        ge=1,
+        description="Hard cap on session lifetime regardless of activity",
+    )
+    session_idle_ttl_days: int = Field(
+        default=7,
+        ge=1,
+        description="Sliding window: session expires this long after last use",
+    )
+    session_sweep_interval_seconds: int = Field(
+        default=3600,
+        ge=60,
+        description="How often to delete expired and revoked session rows",
+    )
+
+    # CSRF: a per-deployment secret echoed in a header on cookie-authenticated
+    # mutations. Not a credential, so it may sit in the frontend bundle.
+    csrf_token: str = Field(
+        default="",
+        description="Shared secret the web client sends as X-CSRF-Token",
+    )
+    csrf_header_name: str = Field(
+        default="X-CSRF-Token",
+        description="Header carrying the CSRF token on state-changing requests",
+    )
+
+    # Login lockout
+    max_login_attempts: int = Field(
+        default=3,
+        ge=1,
+        description="Consecutive wrong passwords before the account is locked",
+    )
+    login_ip_hourly_limit: int = Field(
+        default=200,
+        ge=1,
+        description=(
+            "Per-IP failed logins allowed per hour. Kept high: mobile carriers NAT "
+            "many subscribers behind one address."
+        ),
+    )
+
+    # Email (verification / password reset) via Gmail SMTP
+    smtp_host: str = Field(default="smtp.gmail.com", description="SMTP host")
+    smtp_port: int = Field(default=587, ge=1, description="SMTP port")
+    smtp_user: str = Field(default="", description="SMTP account address")
+    smtp_app_password: str = Field(
+        default="",
+        description="Gmail app password. This grants IMAP as well as SMTP - treat as a secret.",
+    )
+    email_from: str = Field(default="", description="Sender address for outgoing mail")
+    email_from_name: str = Field(default="Qfza", description="Sender display name")
+    public_site_url: str = Field(
+        default="https://qfza.app",
+        description="Public origin, used to build links inside emails",
+    )
+    password_reset_token_ttl_minutes: int = Field(
+        default=30,
+        ge=1,
+        description="Expiry for password reset and email verification tokens",
+    )
+
+    # Google sign-in (identity only)
+    google_client_id: str = Field(
+        default="", description="Google OAuth client id for ID token validation"
+    )
+
     @property
     def cors_origin_list(self) -> list[str]:
         """Parse CORS origins into a list."""
@@ -110,6 +183,26 @@ class Settings(BaseSettings):
     def is_development(self) -> bool:
         """Check if running in development mode."""
         return self.environment.lower() == "development"
+
+    @property
+    def session_absolute_ttl(self) -> timedelta:
+        """Hard cap on session lifetime, however active the session is."""
+        return timedelta(days=self.session_absolute_ttl_days)
+
+    @property
+    def session_idle_ttl(self) -> timedelta:
+        """Sliding window after which an unused session stops resolving."""
+        return timedelta(days=self.session_idle_ttl_days)
+
+    @property
+    def email_token_ttl(self) -> timedelta:
+        """Lifetime of verification and reset links."""
+        return timedelta(minutes=self.password_reset_token_ttl_minutes)
+
+    @property
+    def cookie_is_secure(self) -> bool:
+        """Whether the session cookie should carry the Secure attribute."""
+        return not self.is_development
 
 
 @lru_cache

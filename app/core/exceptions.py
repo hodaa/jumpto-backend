@@ -148,6 +148,86 @@ class InvalidYouTubeURLError(DomainError):
         )
 
 
+# Auth errors. Codes mirror app.schemas.auth.ErrorCode so the client can key off
+# one vocabulary; the client localizes, the backend only supplies the code.
+
+
+class AuthenticationFailedError(DomainError):
+    """Credentials did not match, or the address is unknown.
+
+    Both cases deliberately share one code: separating them turns the endpoint
+    into an account-enumeration oracle.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("Invalid email or password", code="INVALID_CREDENTIALS")
+
+
+class AccountLockedError(DomainError):
+    """The account exceeded the failed-login threshold and awaits an admin unlock."""
+
+    def __init__(self) -> None:
+        super().__init__("Account is locked; contact support", code="ACCOUNT_LOCKED")
+
+
+class EmailNotVerifiedError(DomainError):
+    """The account exists but its email address is not verified."""
+
+    def __init__(self) -> None:
+        super().__init__("Email address is not verified", code="EMAIL_UNVERIFIED")
+
+
+class TooManyAttemptsError(DomainError):
+    """Per-IP failed-login ceiling reached."""
+
+    def __init__(self) -> None:
+        super().__init__("Too many attempts; try again later", code="TOO_MANY_ATTEMPTS")
+
+
+class UnauthenticatedError(DomainError):
+    """No valid session was presented."""
+
+    def __init__(self) -> None:
+        super().__init__("Authentication required", code="UNAUTHENTICATED")
+
+
+class CsrfError(DomainError):
+    """A cookie-authenticated mutation arrived without a matching CSRF token.
+
+    The browser attaches the session cookie to a cross-site POST automatically,
+    so without this check another site could log the visitor out or delete
+    their history on their behalf.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("CSRF token missing or incorrect", code="CSRF_FAILED")
+
+
+class InvalidTokenError(DomainError):
+    """A verification, reset, or Google token was malformed, expired, or reused."""
+
+    def __init__(self) -> None:
+        super().__init__("Link is invalid or has expired", code="INVALID_REQUEST")
+
+
+class EmailAlreadyRegisteredError(DomainError):
+    """The address is already in use."""
+
+    def __init__(self) -> None:
+        super().__init__("Email already registered", code="CONFLICT")
+
+
+class AuthServiceUnavailableError(DomainError):
+    """Session storage is unreachable, so the request is refused.
+
+    Auth fails closed: a dependency blip must never degrade into allowing
+    everyone through.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("Service temporarily unavailable", code="SERVICE_UNAVAILABLE")
+
+
 # Exception handlers
 
 
@@ -213,5 +293,13 @@ def _get_status_code(error_code: str) -> int:
         "CONFLICT": status.HTTP_409_CONFLICT,
         "EXTERNAL_SERVICE_ERROR": status.HTTP_502_BAD_GATEWAY,
         "DOMAIN_ERROR": status.HTTP_400_BAD_REQUEST,
+        "INVALID_CREDENTIALS": status.HTTP_401_UNAUTHORIZED,
+        "ACCOUNT_LOCKED": status.HTTP_423_LOCKED,
+        "EMAIL_UNVERIFIED": status.HTTP_403_FORBIDDEN,
+        "TOO_MANY_ATTEMPTS": status.HTTP_429_TOO_MANY_REQUESTS,
+        "UNAUTHENTICATED": status.HTTP_401_UNAUTHORIZED,
+        "CSRF_FAILED": status.HTTP_403_FORBIDDEN,
+        "INVALID_REQUEST": status.HTTP_400_BAD_REQUEST,
+        "SERVICE_UNAVAILABLE": status.HTTP_503_SERVICE_UNAVAILABLE,
     }
     return mapping.get(error_code, status.HTTP_500_INTERNAL_SERVER_ERROR)

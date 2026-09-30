@@ -172,3 +172,172 @@ class Job(Base):
 
     def __repr__(self) -> str:
         return f"<Job(id={self.id}, video_id={self.video_id}, status={self.status})>"
+
+
+class User(Base):
+    """A registered account. Anonymous visitors never have a row here."""
+
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    email: Mapped[str] = mapped_column(String(254), nullable=False, unique=True)
+    # Nullable: a Google-only account has no password.
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    google_sub: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True)
+    email_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Lockout state. Resets on a successful login or an admin unlock.
+    failed_login_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_failed_login_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    def __repr__(self) -> str:
+        return f"<User(id={self.id}, email={self.email})>"
+
+
+class Session(Base):
+    """A login session. Only the token hash is stored, never the token."""
+
+    __tablename__ = "sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    last_used_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
+    user: Mapped["User"] = relationship("User")
+
+    __table_args__ = (
+        Index("idx_sessions_user_id", "user_id"),
+        Index("idx_sessions_expires_at", "expires_at"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<Session(id={self.id}, user_id={self.user_id}, expires_at={self.expires_at})>"
+
+
+class SearchHistory(Base):
+    """One search by a registered user. Anonymous searches are never recorded."""
+
+    __tablename__ = "search_history"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    video_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    keyword: Mapped[str] = mapped_column(String(500), nullable=False)
+    locale: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    source: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="processing")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    user: Mapped["User"] = relationship("User")
+
+    __table_args__ = (Index("idx_search_history_user_created", "user_id", "created_at"),)
+
+    def __repr__(self) -> str:
+        return f"<SearchHistory(id={self.id}, user_id={self.user_id}, video_id={self.video_id})>"
+
+
+class AuthToken(Base):
+    """A single-use token: email verification or password reset.
+
+    Storing only the hash means a database dump does not hand over working links.
+    """
+
+    __tablename__ = "auth_tokens"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    purpose: Mapped[str] = mapped_column(String(32), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    user: Mapped["User"] = relationship("User")
+
+    def __repr__(self) -> str:
+        return f"<AuthToken(id={self.id}, purpose={self.purpose}, used={self.used_at is not None})>"
+
+
+class LoginAttempt(Base):
+    """A rolling failed-login counter for one client address.
+
+    Exists so an attacker cannot grind the three-strike lockout against many
+    accounts from a single host. One row per address per hour window.
+    """
+
+    __tablename__ = "login_attempts"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    ip: Mapped[str] = mapped_column(String(45), nullable=False)
+    window_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    failed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        UniqueConstraint("ip", "window_started_at", name="uq_login_attempts_ip_window"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<LoginAttempt(ip={self.ip}, count={self.failed_count})>"
