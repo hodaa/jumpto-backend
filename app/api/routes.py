@@ -3,13 +3,16 @@
 import asyncio
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.identity import resolve_identity
+from app.core.config import Settings, get_settings
 from app.core.database import get_db_session
 from app.core.exceptions import VideoNotFoundError, VideoNotTranscribedError
+from app.core.logging import get_logger
 from app.models import Video
 from app.repositories import (
     ContactRepository,
@@ -17,6 +20,7 @@ from app.repositories import (
     TranscriptWordRepository,
     VideoRepository,
 )
+from app.repositories.search_history_repository import SearchHistoryRepository
 from app.schemas import (
     ContactRequest,
     ContactResponse,
@@ -35,9 +39,17 @@ from app.services import (
     SearchService,
     validate_youtube_url,
 )
+from app.services.history_recorder import (
+    STATUS_FOUND,
+    STATUS_NOT_FOUND,
+    STATUS_PROCESSING,
+    SearchHistoryRecorder,
+)
 from app.services.messaging import dispatch_transcription
 
 router = APIRouter()
+
+logger = get_logger(__name__)
 
 
 def get_video_repo(session: AsyncSession = Depends(get_db_session)) -> VideoRepository:
@@ -84,6 +96,13 @@ def get_job_service(
     return JobService(job_repo, video_repo)
 
 
+def get_history_recorder(
+    session: AsyncSession = Depends(get_db_session),
+) -> SearchHistoryRecorder:
+    """Build the recorder that files a search under the caller's account."""
+    return SearchHistoryRecorder(SearchHistoryRepository(session), session)
+
+
 @router.post(
     "/api/search",
     response_model=SearchResponse,
@@ -97,9 +116,12 @@ def get_job_service(
 )
 async def search(
     request: SearchRequest,
+    request_object: Request,
     video_repo: VideoRepository = Depends(get_video_repo),
     search_service: SearchService = Depends(get_search_service),
     job_service: JobService = Depends(get_job_service),
+    recorder: SearchHistoryRecorder = Depends(get_history_recorder),
+    settings: Settings = Depends(get_settings),
     session: AsyncSession = Depends(get_db_session),
 ) -> SearchResponse:
     """
@@ -107,7 +129,23 @@ async def search(
 
     Returns cached results immediately when the video is already transcribed;
     otherwise queues a transcription job and returns a job id.
+
+    Anonymous and signed-in visitors take exactly the same path. When a session
+    is present the search is also filed under that account, which is why the
+    identity lookup here is optional and swallows its own failures.
     """
+    caller_id = await _optional_caller_id(request_object, settings, session)
+
+    async def remember(status: str) -> None:
+        await recorder.record(
+            user_id=caller_id,
+            video_id=youtube_info.video_id,
+            keyword=request.keyword,
+            status=status,
+            locale=_client_locale(request_object),
+            source=_client_source(request_object),
+        )
+
     youtube_info = validate_youtube_url(str(request.youtube_url))
     video = await video_repo.get_by_video_id_lite(youtube_info.video_id)
 
@@ -117,9 +155,11 @@ async def search(
         # surface that distinctly from "keyword not found in a real transcript".
         no_speech = not results and not await video_repo.has_speech_text(video.id)
         if not results:
+            await remember(STATUS_NOT_FOUND)
             return SearchResponseCached(
                 status=SearchStatus.NOT_FOUND, results=[], no_speech=no_speech
             )
+        await remember(STATUS_FOUND)
         return SearchResponseCached(status="found", results=results)
 
     if not video:
@@ -130,6 +170,9 @@ async def search(
         )
 
     job = await job_service.create_or_get_job(video.id)
+    # Recorded before the commit so the row lands in the same transaction as the
+    # video and job it refers to.
+    await remember(STATUS_PROCESSING)
     await session.commit()
     await asyncio.to_thread(_dispatch_pipeline, job.id)
     response = SearchResponseProcessing(status="processing", job_id=job.id, video_id=video.id)
@@ -137,6 +180,47 @@ async def search(
         status_code=status.HTTP_202_ACCEPTED,
         content=response.model_dump(mode="json"),
     )
+
+
+async def _optional_caller_id(
+    request: Request, settings: Settings, db: AsyncSession
+) -> UUID | None:
+    """Return the signed-in user id, or None for an anonymous visitor.
+
+    Never raises. A bad cookie, an expired session, or the session table being
+    unreachable all mean "nobody", because a public search must not depend on
+    the account system being healthy.
+    """
+    token = request.cookies.get(settings.session_cookie_name) or _bearer_token(
+        request.headers.get("Authorization")
+    )
+    if not token:
+        return None
+    try:
+        identity = await resolve_identity(db=db, settings=settings, token=token)
+    except Exception:
+        logger.warning("Could not resolve an optional session on /api/search", exc_info=True)
+        return None
+    return identity.user.id if identity else None
+
+
+def _bearer_token(header: str | None) -> str | None:
+    if header and header.lower().startswith("bearer "):
+        return header[7:].strip()
+    return None
+
+
+def _client_locale(request: Request) -> str | None:
+    """Best-effort UI language from Accept-Language, stored for later filtering."""
+    header = request.headers.get("Accept-Language")
+    if not header:
+        return None
+    top = header.split(",")[0].strip().lower()
+    return top[:10] or None
+
+
+def _client_source(request: Request) -> str | None:
+    return request.headers.get("X-Qfza-Source")
 
 
 @router.post(

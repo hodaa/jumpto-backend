@@ -6,6 +6,7 @@ from collections.abc import AsyncGenerator
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -48,7 +49,19 @@ async def test_db_engine():
 
 @pytest_asyncio.fixture
 async def db_session(test_db_engine) -> AsyncGenerator[AsyncSession, None]:
-    """Create a database session for each test."""
+    """Create a database session for each test.
+
+    The schema is built once per session, so every test starts by emptying it.
+    Without that, a row written by one test is still there for the next one -
+    which hides real bugs (two tests using the same address collide) and, worse,
+    makes a test pass for the wrong reason.
+    """
+    async with test_engine.begin() as conn:
+        table_names = ", ".join(f'"{t.name}"' for t in Base.metadata.sorted_tables)
+        # CASCADE covers the foreign keys between these tables; RESTART IDENTITY
+        # keeps generated ids predictable from one test to the next.
+        await conn.execute(text(f"TRUNCATE {table_names} RESTART IDENTITY CASCADE"))
+
     async with TestAsyncSessionFactory() as session:
         try:
             yield session

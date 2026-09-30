@@ -101,7 +101,7 @@ Timeout: 30 min max
 ## 🔑 Environment Variables
 
 DATABASE_URL=postgresql://user:password@localhost/youtube_keyword_finder
-ASSEMBLY_API_KEY=99e8ad3adb524cf7a6ba98c2778f55a5[text](../../nodeJs/aniq/AGENTS.md)
+ASSEMBLY_API_KEY=your_api_key_here
 REDIS_URL=redis://localhost:6379
 ENVIRONMENT=development
 
