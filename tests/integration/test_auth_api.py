@@ -71,9 +71,12 @@ def google_verifier() -> StubGoogle:
     return StubGoogle()
 
 
-@pytest_asyncio.fixture
-async def auth_client(db_session, auth_settings, sender, google_verifier):  # noqa: ANN001
-    """App wired to the test database, a captured mailer, and the fake Google port."""
+def _build_auth_client(db_session, settings, sender, google_verifier):  # noqa: ANN001, ANN201
+    """An httpx client wired to the test database, a captured mailer, and a fake Google port.
+
+    https, because the session cookie is Secure outside development and a
+    client must not return a Secure cookie over plain http.
+    """
 
     async def override_get_db():
         # Mirror production: get_db_session commits when the request finishes.
@@ -83,23 +86,42 @@ async def auth_client(db_session, auth_settings, sender, google_verifier):  # no
         yield db_session
         await db_session.commit()
 
-    def override_settings():
-        return auth_settings
-
     app = create_app()
     app.dependency_overrides[get_db_session] = override_get_db
-    app.dependency_overrides[get_settings] = override_settings
+    app.dependency_overrides[get_settings] = lambda: settings
     import app.api.v1_auth as v1_auth
 
     app.dependency_overrides[v1_auth.get_email_sender] = lambda: sender
-
     app.dependency_overrides[v1_auth.get_google_verifier] = lambda: google_verifier
+    return app
 
-    # https, because the session cookie is Secure outside development and a
-    # client must not return a Secure cookie over plain http.
+
+@pytest_asyncio.fixture
+async def auth_client(db_session, auth_settings, sender, google_verifier):  # noqa: ANN001
+    app = _build_auth_client(db_session, auth_settings, sender, google_verifier)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="https://test") as client:
         yield client
+    app.dependency_overrides.clear()
 
+
+@pytest_asyncio.fixture
+async def account_client(db_session, auth_settings, sender, google_verifier):  # noqa: ANN001
+    """A client whose per-IP ceiling is out of the way.
+
+    The three-strike account rule and the per-IP ceiling are separate brakes.
+    Every request from one test client shares one address - a forwarded header
+    cannot change that, which is the point of TestForwardedHeaderCannotBypass-
+    TheLimiter - so a test about the account rule has to lift the other brake
+    or it would trip it first and prove nothing.
+    """
+    app = _build_auth_client(
+        db_session,
+        auth_settings.model_copy(update={"login_ip_hourly_limit": 100}),
+        sender,
+        google_verifier,
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="https://test") as client:
+        yield client
     app.dependency_overrides.clear()
 
 
@@ -202,41 +224,33 @@ class TestLoginEndpoint:
         assert response.status_code == 403
         assert response.json()["error"]["code"] == "EMAIL_UNVERIFIED"
 
-    async def test_three_strikes_lock_the_account(self, auth_client, sender) -> None:  # noqa: ANN001
-        email = await self._verified_user(auth_client, sender)
-        # A distinct address each time, so this exercises the per-account rule
-        # rather than the per-IP ceiling, which is covered separately below.
-        for i in range(3):
-            response = await auth_client.post(
-                "/api/v1/auth/login",
-                json={"email": email, "password": "wrong one"},
-                headers={"X-Forwarded-For": f"203.0.113.{i}"},
+    async def test_three_strikes_lock_the_account(self, account_client, sender) -> None:  # noqa: ANN001
+        # account_client lifts the per-IP ceiling, so this exercises the
+        # per-account rule on its own.
+        email = await self._verified_user(account_client, sender)
+        for _ in range(3):
+            response = await account_client.post(
+                "/api/v1/auth/login", json={"email": email, "password": "wrong one"}
             )
             assert response.status_code == 401, response.text
-        locked = await auth_client.post(
-            "/api/v1/auth/login",
-            json={"email": email, "password": PASSWORD},
-            headers={"X-Forwarded-For": "203.0.113.99"},
+        locked = await account_client.post(
+            "/api/v1/auth/login", json={"email": email, "password": PASSWORD}
         )
         assert locked.status_code == 423, locked.text
         assert locked.json()["error"]["code"] == "ACCOUNT_LOCKED"
 
     async def test_a_locked_account_reports_the_lock_not_the_password(
-        self, auth_client, sender
+        self, account_client, sender
     ) -> None:  # noqa: ANN001
         # The correct password still reports the lock, which is what tells the
         # visitor to contact support rather than to retype their password.
-        email = await self._verified_user(auth_client, sender)
-        for i in range(3):
-            await auth_client.post(
-                "/api/v1/auth/login",
-                json={"email": email, "password": "wrong one"},
-                headers={"X-Forwarded-For": f"198.51.100.{i}"},
+        email = await self._verified_user(account_client, sender)
+        for _ in range(3):
+            await account_client.post(
+                "/api/v1/auth/login", json={"email": email, "password": "wrong one"}
             )
-        wrong_again = await auth_client.post(
-            "/api/v1/auth/login",
-            json={"email": email, "password": "still wrong"},
-            headers={"X-Forwarded-For": "198.51.100.99"},
+        wrong_again = await account_client.post(
+            "/api/v1/auth/login", json={"email": email, "password": "still wrong"}
         )
         assert wrong_again.status_code == 401
 
@@ -254,6 +268,101 @@ class TestLoginEndpoint:
         )
         assert response.status_code == 429
         assert response.json()["error"]["code"] == "TOO_MANY_ATTEMPTS"
+
+
+class TestForwardedHeaderCannotBypassTheLimiter:
+    """The per-IP ceiling must key on an address the client cannot choose.
+
+    An attacker who can name their own limiter key gets unlimited password
+    guesses, which would make the three-attempt lockout on the account
+    unreachable - the ceiling would never be reached to trigger it.
+    """
+
+    async def test_a_rotating_header_does_not_reset_the_count(self, auth_client, sender) -> None:  # noqa: ANN001
+        # Each attempt claims a brand new source address. None is behind a
+        # configured proxy, so all of them are the same client.
+        for attempt in range(4):
+            response = await auth_client.post(
+                "/api/v1/auth/login",
+                json={"email": "ghost@example.com", "password": "wrong one"},
+                headers={"X-Forwarded-For": f"198.51.100.{attempt}"},
+            )
+        assert response.status_code == 429
+        assert response.json()["error"]["code"] == "TOO_MANY_ATTEMPTS"
+
+    async def test_the_limiter_still_holds_after_a_header_is_added(
+        self, auth_client, sender
+    ) -> None:  # noqa: ANN001
+        # The first three attempts are the attack; the fourth is plain.
+        for attempt in range(3):
+            await auth_client.post(
+                "/api/v1/auth/login",
+                json={"email": "ghost@example.com", "password": "wrong one"},
+                headers={"X-Forwarded-For": f"198.51.100.{attempt}"},
+            )
+        response = await auth_client.post(
+            "/api/v1/auth/login", json={"email": "ghost@example.com", "password": "wrong one"}
+        )
+        assert response.status_code == 429
+
+    async def test_a_junk_header_does_not_error(self, auth_client, sender) -> None:  # noqa: ANN001
+        # A value that cannot be stored in the ip column must not become a 500.
+        response = await auth_client.post(
+            "/api/v1/auth/login",
+            json={"email": "ghost@example.com", "password": "wrong one"},
+            headers={"X-Forwarded-For": "x" * 4000},
+        )
+        assert response.status_code == 401
+
+    async def test_a_hostname_header_is_refused(self, auth_client, sender) -> None:  # noqa: ANN001
+        response = await auth_client.post(
+            "/api/v1/auth/login",
+            json={"email": "ghost@example.com", "password": "wrong one"},
+            headers={"X-Forwarded-For": "attacker.example.com"},
+        )
+        assert response.status_code == 401
+
+
+class TestForwardedHeaderBehindATrustedProxy:
+    """When a proxy is configured, it may speak for the client."""
+
+    @pytest.fixture
+    def proxy_settings(self, auth_settings: Settings) -> Settings:
+        return auth_settings.model_copy(update={"trusted_proxy_networks": "127.0.0.0/8"})
+
+    @pytest_asyncio.fixture
+    async def proxy_client(self, db_session, proxy_settings, sender, google_verifier):  # noqa: ANN001
+        app = _build_auth_client(db_session, proxy_settings, sender, google_verifier)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="https://test") as ac:
+            yield ac
+        app.dependency_overrides.clear()
+
+    async def test_the_client_address_behind_the_proxy_is_used(self, proxy_client, sender) -> None:  # noqa: ANN001
+        # Trusted, so three distinct claimed addresses are three distinct keys
+        # and each gets its own budget.
+        for address in ("198.51.100.1", "198.51.100.2", "198.51.100.3"):
+            response = await proxy_client.post(
+                "/api/v1/auth/login",
+                json={"email": "ghost@example.com", "password": "wrong one"},
+                headers={"X-Forwarded-For": address},
+            )
+            assert response.status_code == 401, response.text
+
+    async def test_the_same_address_behind_the_proxy_still_trips(
+        self, proxy_client, sender
+    ) -> None:  # noqa: ANN001
+        for _ in range(3):
+            await proxy_client.post(
+                "/api/v1/auth/login",
+                json={"email": "ghost@example.com", "password": "wrong one"},
+                headers={"X-Forwarded-For": "198.51.100.1"},
+            )
+        response = await proxy_client.post(
+            "/api/v1/auth/login",
+            json={"email": "ghost@example.com", "password": "wrong one"},
+            headers={"X-Forwarded-For": "198.51.100.1"},
+        )
+        assert response.status_code == 429
 
 
 class TestSessionCookie:

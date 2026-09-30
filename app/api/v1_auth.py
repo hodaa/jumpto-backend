@@ -28,6 +28,7 @@ from fastapi import status as http_status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.identity import build_auth_service
+from app.core.client_ip import FORWARDED_HEADER, resolve_client_ip
 from app.core.config import Settings, get_settings
 from app.core.database import get_db_session
 from app.core.exceptions import (
@@ -224,12 +225,18 @@ def _to_user_response(user: User) -> AuthUserResponse:
     )
 
 
-def _client_ip(request: Request) -> str | None:
-    """Best-effort client IP for the per-IP throttle and session display."""
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()[:45]
-    return request.client.host if request.client else None
+def _client_ip(request: Request, settings: Settings) -> str | None:
+    """The address to key the per-IP throttle and session display on.
+
+    A forwarded header is believed only when the connection came from a
+    configured proxy, so a direct client cannot mint itself a fresh limiter
+    bucket by inventing an X-Forwarded-For.
+    """
+    return resolve_client_ip(
+        peer=request.client.host if request.client else None,
+        forwarded_for=request.headers.get(FORWARDED_HEADER),
+        trusted_networks=settings.trusted_proxy_list,
+    )
 
 
 # ── registration and login ─────────────────────────────────────────
@@ -274,7 +281,7 @@ async def login(
     issued = await auth_service.login(
         email=payload.email,
         password=payload.password,
-        ip=_client_ip(request),
+        ip=_client_ip(request, settings),
         user_agent=request.headers.get("User-Agent"),
     )
     _set_session_cookie(response, token=issued.token, settings=settings)
@@ -308,7 +315,7 @@ async def login_with_google(
     """
     issued = await auth_service.login_with_google(
         id_token=payload.id_token,
-        ip=_client_ip(request),
+        ip=_client_ip(request, settings),
         user_agent=request.headers.get("User-Agent"),
     )
     _set_session_cookie(response, token=issued.token, settings=settings)

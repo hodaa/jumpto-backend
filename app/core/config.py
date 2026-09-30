@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 from functools import lru_cache
+from ipaddress import IPv4Network, IPv6Network, ip_network
 from typing import Annotated, Literal
 
 from pydantic import BeforeValidator, Field
@@ -141,6 +143,14 @@ class Settings(BaseSettings):
             "many subscribers behind one address."
         ),
     )
+    trusted_proxy_networks: str = Field(
+        default="",
+        description=(
+            "Comma-separated IP addresses or CIDR ranges of proxies that may set "
+            "X-Forwarded-For. Empty means trust none, so the header is ignored and "
+            "the connecting address is used."
+        ),
+    )
 
     # Email (verification / password reset) via Gmail SMTP
     smtp_host: str = Field(default="smtp.gmail.com", description="SMTP host")
@@ -203,6 +213,29 @@ class Settings(BaseSettings):
     def cookie_is_secure(self) -> bool:
         """Whether the session cookie should carry the Secure attribute."""
         return not self.is_development
+
+    @property
+    def trusted_proxy_list(self) -> list[IPv4Network | IPv6Network]:
+        """Parse the trusted proxy list into networks.
+
+        An unparseable entry is dropped rather than fatal: a typo in an env var
+        should not stop the API booting, and dropping an entry only makes the
+        deployment stricter.
+        """
+        networks: list[IPv4Network | IPv6Network] = []
+        for raw in self.trusted_proxy_networks.split(","):
+            entry = raw.strip()
+            if not entry:
+                continue
+            try:
+                networks.append(ip_network(entry, strict=False))
+            except ValueError:
+                # stdlib logging, not the app's: that wrapper imports settings,
+                # and settings cannot depend on something that imports it.
+                logging.getLogger(__name__).warning(
+                    "Ignoring an unparseable trusted proxy entry", extra={"entry": entry}
+                )
+        return networks
 
 
 @lru_cache
