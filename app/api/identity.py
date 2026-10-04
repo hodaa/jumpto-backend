@@ -15,7 +15,7 @@ from app.repositories.login_attempt_repository import LoginAttemptRepository
 from app.repositories.search_history_repository import SearchHistoryRepository
 from app.repositories.session_repository import SessionRepository, UserRepository
 from app.services.auth import AuthIdentity, AuthService
-from app.services.email import GmailSmtpEmailSender
+from app.services.email import SmtpEmailSender
 
 
 def build_auth_service(*, db: AsyncSession, settings: Settings) -> AuthService:
@@ -28,13 +28,14 @@ def build_auth_service(*, db: AsyncSession, settings: Settings) -> AuthService:
         attempt_repo=LoginAttemptRepository(db),
         db=db,
         settings=settings,
-        email_sender=GmailSmtpEmailSender(
+        email_sender=SmtpEmailSender(
             host=settings.smtp_host,
             port=settings.smtp_port,
             user=settings.smtp_user,
             app_password=settings.smtp_app_password,
             from_email=settings.email_from or settings.smtp_user,
             from_name=settings.email_from_name,
+            use_ssl=settings.smtp_use_ssl,
         ),
     )
 

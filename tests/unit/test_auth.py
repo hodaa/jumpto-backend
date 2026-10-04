@@ -36,8 +36,11 @@ from app.repositories.session_repository import (
     UserRepository,
     absolute_deadline,
 )
+from app.repositories.transcript_word_repository import TranscriptWordRepository
+from app.repositories.video_repository import VideoRepository
 from app.services.auth import PURPOSE_RESET, PURPOSE_VERIFY, AuthService, HistoryService
 from app.services.password import hash_password, verify_password
+from app.services.search import SearchService
 
 pytestmark = pytest.mark.asyncio
 
@@ -384,9 +387,24 @@ class TestPasswordReset:
 class TestHistoryOwnership:
     """History is reachable only through the owning user id."""
 
+    @staticmethod
+    def _service(history_repo: SearchHistoryRepository) -> HistoryService:
+        """Build the service with real sibling deps on the same test session.
+
+        The video lookup then misses on these fixtures (no videos are seeded),
+        which is the same 'nothing to backfill' path production takes for a row
+        whose video is not in the database.
+        """
+        session = history_repo.session
+        return HistoryService(
+            history_repo=history_repo,
+            video_repo=VideoRepository(session),
+            search_service=SearchService(TranscriptWordRepository(session)),
+        )
+
     async def test_entries_are_scoped_to_their_user(self, db) -> None:  # noqa: ANN001
         users, sessions, tokens, history_repo, _attempts = db
-        service = HistoryService(history_repo=history_repo)
+        service = self._service(history_repo)
 
         alice = await users.create(email="alice@example.com", password_hash="x")
         bob = await users.create(email="bob@example.com", password_hash="x")
@@ -399,7 +417,7 @@ class TestHistoryOwnership:
 
     async def test_deleting_another_users_entry_is_refused(self, db) -> None:  # noqa: ANN001
         users, sessions, tokens, history_repo, _attempts = db
-        service = HistoryService(history_repo=history_repo)
+        service = self._service(history_repo)
 
         alice = await users.create(email="alice@example.com", password_hash="x")
         bob = await users.create(email="bob@example.com", password_hash="x")
@@ -412,7 +430,7 @@ class TestHistoryOwnership:
 
     async def test_clear_all_only_touches_the_caller(self, db) -> None:  # noqa: ANN001
         users, sessions, tokens, history_repo, _attempts = db
-        service = HistoryService(history_repo=history_repo)
+        service = self._service(history_repo)
 
         alice = await users.create(email="alice@example.com", password_hash="x")
         bob = await users.create(email="bob@example.com", password_hash="x")
@@ -425,7 +443,7 @@ class TestHistoryOwnership:
 
     async def test_pagination_walks_the_whole_history(self, db) -> None:  # noqa: ANN001
         users, sessions, tokens, history_repo, _attempts = db
-        service = HistoryService(history_repo=history_repo)
+        service = self._service(history_repo)
         user = await users.create(email="pager@example.com", password_hash="x")
 
         for i in range(7):
@@ -691,6 +709,209 @@ class TestGoogleSignIn:
         assert verifier.seen == ["the-raw-token"]
 
 
+class TestGoogleDisplayName:
+    """The name Google returns is stored, refreshed, and never invented."""
+
+    async def test_a_new_google_account_records_the_name(self, db, settings) -> None:  # noqa: ANN001
+        from app.services.google import GoogleIdentity
+
+        service = _google_service(
+            db,
+            settings,
+            StubVerifier(
+                GoogleIdentity(subject="s", email="named@example.com", full_name="Hoda Hussin")
+            ),
+        )
+        issued = await service.login_with_google(id_token="a" * 60)
+        assert issued.user.full_name == "Hoda Hussin"
+
+    async def test_a_google_account_with_no_name_claims_none(self, db, settings) -> None:  # noqa: ANN001
+        from app.services.google import GoogleIdentity
+
+        service = _google_service(
+            db,
+            settings,
+            StubVerifier(GoogleIdentity(subject="s", email="anon@example.com", full_name=None)),
+        )
+        issued = await service.login_with_google(id_token="a" * 60)
+        # Null, so the client falls back to the address rather than showing "".
+        assert issued.user.full_name is None
+
+    async def test_renaming_in_google_propagates_on_the_next_sign_in(self, db, settings) -> None:  # noqa: ANN001
+        from app.services.google import GoogleIdentity
+
+        users = db[0]
+        first = _google_service(
+            db,
+            settings,
+            StubVerifier(
+                GoogleIdentity(subject="s", email="rename@example.com", full_name="Old Name")
+            ),
+        )
+        await first.login_with_google(id_token="a" * 60)
+
+        second = _google_service(
+            db,
+            settings,
+            StubVerifier(
+                GoogleIdentity(subject="s", email="rename@example.com", full_name="New Name")
+            ),
+        )
+        issued = await second.login_with_google(id_token="b" * 60)
+        assert issued.user.full_name == "New Name"
+
+        # The response must agree with the row, not lag it by a bulk UPDATE.
+        stored = await users.get_by_email("rename@example.com")
+        assert stored is not None
+        assert stored.full_name == "New Name"
+
+    async def test_a_missing_claim_does_not_erase_a_stored_name(self, db, settings) -> None:  # noqa: ANN001
+        from app.services.google import GoogleIdentity
+
+        users = db[0]
+        named = _google_service(
+            db,
+            settings,
+            StubVerifier(
+                GoogleIdentity(subject="s", email="keep@example.com", full_name="Hoda Hussin")
+            ),
+        )
+        await named.login_with_google(id_token="a" * 60)
+
+        # Google omitting the field is not a claim that the name is now blank.
+        nameless = _google_service(
+            db, settings, StubVerifier(GoogleIdentity(subject="s", email="keep@example.com"))
+        )
+        issued = await nameless.login_with_google(id_token="b" * 60)
+        assert issued.user.full_name == "Hoda Hussin"
+
+        stored = await users.get_by_email("keep@example.com")
+        assert stored is not None
+        assert stored.full_name == "Hoda Hussin"
+
+    async def test_an_unchanged_name_is_not_written_again(self, db, settings) -> None:  # noqa: ANN001
+        from app.services.google import GoogleIdentity
+
+        users = db[0]
+        identity = GoogleIdentity(subject="s", email="stable@example.com", full_name="Same Name")
+        await _google_service(db, settings, StubVerifier(identity)).login_with_google(
+            id_token="a" * 60
+        )
+
+        calls: list[tuple] = []
+        original = users.set_full_name
+
+        async def counting(user_id: object, full_name: str) -> None:
+            calls.append((user_id, full_name))
+            await original(user_id, full_name)  # type: ignore[arg-type]
+
+        users.set_full_name = counting  # type: ignore[method-assign]
+        await _google_service(db, settings, StubVerifier(identity)).login_with_google(
+            id_token="b" * 60
+        )
+
+        # A returning sign-in must not issue a pointless UPDATE on every visit.
+        assert calls == []
+
+    async def test_linking_google_to_a_password_account_records_the_name(
+        self, db, settings
+    ) -> None:  # noqa: ANN001
+        from app.services.google import GoogleIdentity
+
+        users = db[0]
+        existing = await users.create(email="pw@example.com", password_hash="x")
+        await users.mark_email_verified(existing.id)
+
+        service = _google_service(
+            db,
+            settings,
+            StubVerifier(
+                GoogleIdentity(subject="s2", email="pw@example.com", full_name="Hoda Hussin")
+            ),
+        )
+        issued = await service.login_with_google(id_token="a" * 60)
+        assert issued.user.full_name == "Hoda Hussin"
+        assert issued.user.password_hash == "x"
+
+    async def test_a_password_only_account_has_no_name(self, service) -> None:  # noqa: ANN001
+        user = await service.register(email="plain@example.com", password="correct horse")
+        # Nothing to greet by, so the client shows the address instead.
+        assert user.full_name is None
+
+
+class TestReadingGoogleNames:
+    """The name claim is free text, so it is cleaned before anything stores it."""
+
+    def test_a_plain_name_passes_through(self) -> None:
+        from app.services.google import _read_name
+
+        assert _read_name({"name": "Hoda Hussin"}) == "Hoda Hussin"
+
+    def test_whitespace_is_collapsed(self) -> None:
+        from app.services.google import _read_name
+
+        assert _read_name({"name": "  Hoda   Hussin "}) == "Hoda Hussin"
+
+    def test_control_characters_cannot_hide_a_newline(self) -> None:
+        from app.services.google import _read_name
+
+        # A name with an embedded newline would break a log line it is printed in.
+        assert _read_name({"name": "Hoda\nHussin"}) == "Hoda Hussin"
+
+    def test_a_long_name_is_truncated_to_the_column(self) -> None:
+        from app.services.google import NAME_MAX_LENGTH, _read_name
+
+        name = _read_name({"name": "A" * 400})
+        assert name is not None
+        assert len(name) == NAME_MAX_LENGTH
+
+    def test_given_and_family_names_are_composed(self) -> None:
+        from app.services.google import _read_name
+
+        assert _read_name({"given_name": "Hoda", "family_name": "Hussin"}) == "Hoda Hussin"
+
+    @pytest.mark.parametrize(
+        "claims",
+        [{}, {"name": None}, {"name": "   "}, {"name": {"first": "Hoda"}}, {"name": 42}],
+        ids=["absent", "null", "blank", "object", "number"],
+    )
+    def test_anything_unusable_is_none_not_a_stringified_blob(self, claims: dict) -> None:  # noqa: ANN001
+        from app.services.google import _read_name
+
+        # None is the signal to fall back to the address; a str(...) blob would
+        # be stored and rendered as the account's name.
+        assert _read_name(claims) is None
+
+    def test_the_verifier_applies_that_cleaning(self, monkeypatch) -> None:  # noqa: ANN001
+        """verify() must route the claim through _read_name, not around it.
+
+        Testing _read_name on its own is not enough: the wiring between it and
+        the verified identity is exactly where a raw, unstored claim would
+        reach the database.
+        """
+        from app.services import google as google_module
+
+        def fake_decode(*args: object, **kwargs: object) -> dict:
+            return {
+                "sub": "sub-1",
+                "email": "person@example.com",
+                "email_verified": True,
+                "name": "Hoda\nHussin",
+            }
+
+        class FakeJwk:
+            def get_signing_key_from_jwt(self, token: str) -> object:
+                return type("K", (), {"key": "unused"})()
+
+        verifier = google_module.GoogleTokenVerifier(client_id="client-id")
+        monkeypatch.setattr(verifier, "_jwk_client", lambda: FakeJwk())
+        monkeypatch.setattr(google_module.jwt, "decode", fake_decode)
+
+        identity = verifier.verify("header.payload.signature")
+        assert identity is not None
+        assert identity.full_name == "Hoda Hussin"
+
+
 class TestGoogleVerifierRefusesUnconfiguredDeployments:
     """A deployment with no client id must refuse every token, not crash."""
 
@@ -770,3 +991,71 @@ class TestOperatorUnlock:
             revoke_sessions=False,
             session_factory=self._same_transaction(db[0].session),
         )
+
+
+class TestAuthEmailLinksUseConfiguredOrigin:
+    """Reset, set and verification emails must carry the configured origin.
+
+    The production fallback must never stand in for a local origin, and the
+    shape is the real-path form the frontend routes on, with no hash.
+    """
+
+    ORIGIN = "http://localhost:5173"
+
+    @staticmethod
+    def _service(db, sender) -> AuthService:  # noqa: ANN001
+        users, sessions, tokens, history, attempts = db
+        return AuthService(
+            user_repo=users,
+            session_repo=sessions,
+            token_repo=tokens,
+            history_repo=history,
+            attempt_repo=attempts,
+            db=None,
+            settings=Settings(
+                _env_file=None,
+                environment="development",
+                public_site_url=TestAuthEmailLinksUseConfiguredOrigin.ORIGIN,
+                csrf_token="x" * 43,
+            ),
+            email_sender=sender,
+        )
+
+    def _assert_link(self, body: str, path: str) -> None:
+        origin = self.ORIGIN
+        assert f"{origin}{path}?token=" in body
+        # The origin the deployment would otherwise have used, and the hash form
+        # the app would not route, both mean the link cannot be opened.
+        assert "https://qfza.app" not in body
+        assert f"#{path}" not in body
+
+    async def test_verification_email_uses_public_site_url(self, db) -> None:  # noqa: ANN001
+        sender = FakeEmailSender()
+        service = self._service(db, sender)
+        await service.register(email="link@example.com", password="correct horse")
+        assert len(sender.sent) == 1
+        self._assert_link(sender.sent[0][2], "/verify-email")
+
+    async def test_password_reset_email_uses_public_site_url(self, db) -> None:  # noqa: ANN001
+        sender = FakeEmailSender()
+        service = self._service(db, sender)
+        user = await service.register(email="lost@example.com", password="correct horse")
+        await service.user_repo.mark_email_verified(user.id)
+        sender.sent.clear()
+
+        await service.request_password_reset(email="lost@example.com")
+        assert len(sender.sent) == 1
+        self._assert_link(sender.sent[0][2], "/reset-password")
+
+    async def test_password_set_email_uses_public_site_url(self, db) -> None:  # noqa: ANN001
+        sender = FakeEmailSender()
+        service = self._service(db, sender)
+        # The Google-only case this exists for: verified, and no password yet.
+        user = await service.user_repo.create(
+            email="google@example.com", password_hash=None, google_sub="sub-link-test"
+        )
+        await service.user_repo.mark_email_verified(user.id)
+
+        await service.request_password_set(user_id=user.id)
+        assert len(sender.sent) == 1
+        self._assert_link(sender.sent[0][2], "/reset-password")

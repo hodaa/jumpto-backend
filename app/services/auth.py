@@ -23,6 +23,7 @@ from app.core.exceptions import (
     EmailNotVerifiedError,
     InvalidTokenError,
     TooManyAttemptsError,
+    WrongCurrentPasswordError,
 )
 from app.core.logging import get_logger
 from app.models import SearchHistory, User
@@ -38,10 +39,12 @@ from app.repositories.session_repository import (
     UserRepository,
     absolute_deadline,
 )
-from app.services.email import GmailSmtpEmailSender
-from app.services.google import GoogleTokenVerifier
+from app.repositories.video_repository import VideoRepository
+from app.services.email import SmtpEmailSender
+from app.services.google import GoogleIdentity, GoogleTokenVerifier
 from app.services.password import hash_password, verify_password
 from app.services.ports import AuthEmail
+from app.services.search import SearchService
 
 logger = get_logger(__name__)
 
@@ -87,7 +90,7 @@ class AuthService:
         attempt_repo: LoginAttemptRepository,
         db: AsyncSession,
         settings: Settings,
-        email_sender: GmailSmtpEmailSender,
+        email_sender: SmtpEmailSender,
         google_verifier: GoogleTokenVerifier | None = None,
     ) -> None:
         self.user_repo = user_repo
@@ -296,6 +299,55 @@ class AuthService:
             )
         )
 
+    async def request_password_set(self, *, user_id: uuid.UUID) -> None:
+        """Email a link that lets a password-less account choose a first password.
+
+        Distinct from :meth:`request_password_reset`, which is the *opposite*
+        case: that one deliberately refuses an account with no password, so
+        reusing it here silently did nothing for exactly the accounts that need
+        a link. The address comes from the caller's session rather than the
+        request body, so this cannot be pointed at someone else's inbox.
+
+        The link still has to be followed from the mailbox, because the session
+        is only a cookie: one XSS should not be enough to keep access after the
+        owner closes the tab.
+        """
+        user = await self.user_repo.get_by_id(user_id)
+        if user is None:
+            raise AuthenticationFailedError()
+        if user.password_hash is not None:
+            # Already has a password: that is a change, not a first set, and
+            # request_password_reset already covers it.
+            logger.info("Password set requested for an account that has one", user_id=str(user.id))
+            return
+        if user.email_verified_at is None:
+            # An unverified address proves nothing by mail, since the whole
+            # reason it is unverified is that no link ever arrived.
+            logger.info("Password set requested for an unverified address", user_id=str(user.id))
+            return
+
+        await self.token_repo.invalidate_all_for_user(user_id=user.id, purpose=PURPOSE_RESET)
+        token = await self.token_repo.issue(
+            user_id=user.id,
+            purpose=PURPOSE_RESET,
+            ttl=self.settings.email_token_ttl,
+        )
+        link = f"{self.settings.public_site_url}/reset-password?token={token}"
+        await self.email_sender.send(
+            _email(
+                to=user.email,
+                subject="Choose your Qfza password",
+                body=(
+                    "Someone asked to add a password to this Qfza account, which "
+                    "currently signs in with Google only.\n\n"
+                    f"Choose a password here:\n{link}\n\n"
+                    f"This link expires in {self.settings.password_reset_token_ttl_minutes} minutes "
+                    "and can be used once. If this was not you, no action is needed and "
+                    "your Google sign-in keeps working."
+                ),
+            )
+        )
+
     async def confirm_password_reset(self, *, token: str, password: str) -> None:
         """Redeem a reset token, set the new password, revoke every session.
 
@@ -309,7 +361,73 @@ class AuthService:
         await self.user_repo.update_password(user_id, hash_password(password))
         await self.session_repo.revoke_all_for_user(user_id)
 
+    async def change_password(
+        self,
+        *,
+        user_id: uuid.UUID,
+        session_id: uuid.UUID,
+        current_password: str,
+        new_password: str,
+        ip: str | None = None,
+    ) -> None:
+        """Change the caller's own password in place, keeping this session alive.
+
+        The emailed-token flow is the recovery path; this is the ordinary one,
+        for someone who is signed in and simply wants a different password. Two
+        rules keep it from being weaker than that flow:
+
+        The current password is still required. A live session is not proof of
+        ownership on its own - a cookie stolen through XSS must not be enough to
+        take the account over permanently - so the caller has to show the thing
+        they are about to replace.
+
+        The guess is rate-limited like a sign-in. Without this the endpoint
+        becomes an offline oracle: one stolen cookie would otherwise allow
+        grinding the current password against the real hash with no lockout and
+        no hourly ceiling.
+
+        Every *other* session is revoked, and this one is kept, so the person who
+        just proved they own the password is not signed out of the browser they
+        proved it in.
+        """
+        if ip is not None and await self.attempt_repo.is_throttled(
+            ip=ip, limit=self.settings.login_ip_hourly_limit
+        ):
+            raise TooManyAttemptsError()
+
+        user = await self.user_repo.get_by_id(user_id)
+        encoded = user.password_hash if user is not None else _DUMMY_HASH
+
+        # The dummy hash is verified against even when there is no password, so a
+        # password-less account costs the same time as a wrong guess rather than
+        # answering noticeably faster.
+        if user is None or encoded is None or not verify_password(current_password, encoded):
+            if ip is not None:
+                await self.attempt_repo.record_failure(ip=ip)
+            raise WrongCurrentPasswordError()
+
+        await self.user_repo.update_password(user_id, hash_password(new_password))
+        await self.session_repo.revoke_all_for_user_except(user_id, keep_session_id=session_id)
+        if ip is not None:
+            await self.attempt_repo.clear(ip=ip)
+
     # ── Google sign-in ──────────────────────────────────────────────
+
+    async def _sync_full_name(self, user: User, identity: GoogleIdentity) -> None:
+        """Copy Google's display name onto the account, if it has one.
+
+        Two rules keep this from destroying data. A claim that arrives empty
+        never overwrites a name already stored, because Google omitting a field
+        is not a statement that the account has no name. And an unchanged name
+        is not written at all, so an ordinary sign-in does not issue an UPDATE.
+        """
+        name = identity.full_name
+        if name is None or name == user.full_name:
+            return
+        await self.user_repo.set_full_name(user.id, name)
+        # set_full_name is a bulk UPDATE that bypasses the identity map, so the
+        # in-memory row has to follow or the response still shows the old name.
+        user.full_name = name
 
     async def login_with_google(
         self,
@@ -332,6 +450,8 @@ class AuthService:
 
         user = await self.user_repo.get_by_google_sub(identity.subject)
         if user is not None:
+            # Re-read the name every sign-in, so renaming in Google propagates.
+            await self._sync_full_name(user, identity)
             return await self._open_session(user, ip=ip, user_agent=user_agent)
 
         user = await self.user_repo.get_by_email(identity.email)
@@ -342,6 +462,7 @@ class AuthService:
                 email=identity.email,
                 password_hash=None,
                 google_sub=identity.subject,
+                full_name=identity.full_name,
             )
             await self.user_repo.mark_email_verified(user.id)
             # mark_email_verified is a bulk UPDATE, so re-read to get a row that
@@ -357,6 +478,7 @@ class AuthService:
         else:
             await self.user_repo.link_google_sub(user.id, identity.subject)
             user.google_sub = identity.subject
+            await self._sync_full_name(user, identity)
 
         await self.user_repo.clear_failures(user.id)
         return await self._open_session(user, ip=ip, user_agent=user_agent)
@@ -368,11 +490,25 @@ class AuthService:
         return await self.session_repo.sweep_expired()
 
 
+#: Most rows a single history page will re-search to recover missing results.
+#: Each is one indexed phrase query, so this bounds worst-case page latency
+#: without leaving a page's worth of rows permanently unrepaired.
+MAX_RESULT_BACKFILLS = 20
+
+
 class HistoryService:
     """Read and delete the caller's own history."""
 
-    def __init__(self, *, history_repo: SearchHistoryRepository) -> None:
+    def __init__(
+        self,
+        *,
+        history_repo: SearchHistoryRepository,
+        video_repo: VideoRepository,
+        search_service: SearchService,
+    ) -> None:
         self.history_repo = history_repo
+        self.video_repo = video_repo
+        self.search_service = search_service
 
     async def record(
         self,
@@ -383,6 +519,7 @@ class HistoryService:
         status: str,
         locale: str | None = None,
         source: str | None = None,
+        match_results: list[dict[str, object]] | None = None,
     ) -> SearchHistory:
         """Record one search. ``user_id`` always comes from the session."""
         return await self.history_repo.record(
@@ -392,6 +529,7 @@ class HistoryService:
             status=status,
             locale=locale,
             source=source,
+            match_results=match_results,
         )
 
     async def list_page(
@@ -401,7 +539,60 @@ class HistoryService:
         limit: int = 20,
         cursor: str | None = None,
     ) -> list:
-        return await self.history_repo.list_for_user(user_id=user_id, limit=limit, cursor=cursor)
+        entries = await self.history_repo.list_for_user(
+            user_id=user_id, limit=limit, cursor=cursor
+        )
+        await self._recover_missing_results(entries)
+        return entries
+
+    async def _recover_missing_results(self, entries: list[SearchHistory]) -> None:
+        """Recover stored results for rows that were filed before they existed.
+
+        A search of a never-before-seen video is recorded the moment the
+        transcription is *queued*, so it has no results yet - there is nothing
+        to store. Once the transcript lands and the search resolves, nothing was
+        left to update that row, so it stayed empty and the history page had no
+        choice but to show it as a bare keyword at 00:00.
+
+        The result set is a deterministic function of (video, keyword), so it can
+        be recovered after the fact: run the same search again and store
+        everything it found. Persisted once, so later page loads pay nothing.
+
+        A position that was already recorded is never moved: that value is a
+        deliberate snapshot of where the quote sat when the search ran, and
+        re-deriving it here would silently relocate a past result. Only a row
+        with no position at all takes one from the recovered matches. Rows from
+        before results were stored therefore gain their full list while keeping
+        the moment they were already pointing at.
+
+        Deliberately narrow: only rows with no stored results, only videos that
+        are actually transcribed, and only when the keyword still matches - a
+        keyword that no longer matches had no match to record, and saying so by
+        leaving the row empty is honest.
+        """
+        pending = [entry for entry in entries if not entry.match_results]
+        if not pending:
+            return
+        pending = pending[:MAX_RESULT_BACKFILLS]
+
+        updates: list[tuple[SearchHistory, int, list[dict[str, object]]]] = []
+        for entry in pending:
+            video = await self.video_repo.get_by_video_id_lite(entry.video_id)
+            if video is None or video.transcribed_at is None:
+                # Never transcribed (still queued, or failed): there is no
+                # transcript to search, so the results are genuinely unknown.
+                continue
+            matches = await self.search_service.search(video.id, entry.keyword)
+            if matches:
+                results = [m.model_dump(mode="json") for m in matches]
+                # The repository decides whether to write this: None means "no
+                # position was ever recorded, take one", a number is a snapshot
+                # the search route already committed to and is left alone.
+                updates.append(
+                    (entry, int(matches[0].progress_seconds), results)
+                )
+
+        await self.history_repo.apply_match_results(updates)
 
     async def delete_entry(self, *, user_id: uuid.UUID, entry_id: uuid.UUID) -> bool:
         return await self.history_repo.delete_one(user_id=user_id, entry_id=entry_id)

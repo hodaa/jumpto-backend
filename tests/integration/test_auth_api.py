@@ -146,6 +146,40 @@ async def _verify_via_email(client: AsyncClient, sender: CapturingSender, db_ses
     assert response.json()["email_verified"] is True
 
 
+async def _seed_transcribed_video(db_session, video_id: str, title: str):  # noqa: ANN001, ANN201
+    """A video that already has a transcript, so a search of it is a cache hit.
+
+    Returns the row rather than the id because the caller needs its youtube_url to
+    post the search, and re-deriving that from the id would duplicate the one
+    convention the search route validates against.
+    """
+    from datetime import UTC, datetime
+
+    from app.models import TranscriptWord, Video
+    from tests.utils.job_driver import (
+        FAKE_TRANSCRIPT_TEXT,
+        FAKE_TRANSCRIPT_TSVECTOR,
+        FAKE_TRANSCRIPT_WORDS,
+    )
+
+    video = Video(
+        youtube_url=f"https://www.youtube.com/watch?v={video_id}",
+        video_id=video_id,
+        title=title,
+        duration_seconds=100,
+        language="en",
+        transcript=FAKE_TRANSCRIPT_TEXT,
+        transcript_tsvector=FAKE_TRANSCRIPT_TSVECTOR,
+        transcribed_at=datetime.now(UTC),
+    )
+    db_session.add(video)
+    await db_session.flush()
+    for word_data in FAKE_TRANSCRIPT_WORDS:
+        db_session.add(TranscriptWord(video_id=video.id, **word_data))
+    await db_session.flush()
+    return video
+
+
 class TestRegistrationEndpoint:
     """POST /api/v1/auth/register"""
 
@@ -156,7 +190,14 @@ class TestRegistrationEndpoint:
         )
         assert response.status_code == 201
         assert response.json()["email_verified"] is False
-        assert "password" not in response.text
+        # The credential must never come back. Checked against the secret and the
+        # stored hash rather than the bare word "password": `has_password` is a
+        # boolean about the account's state, not the secret, and its name alone
+        # contains that substring — so the old assertion here started failing the
+        # day that field was added, for a leak that was never there.
+        assert PASSWORD not in response.text
+        assert "password_hash" not in response.text
+        assert "password" not in response.json()
 
     async def test_sends_a_verification_link(self, auth_client, sender) -> None:  # noqa: ANN001
         await auth_client.post(
@@ -571,6 +612,176 @@ class TestHistoryEndpoint:
         assert len(entries) == 3
         assert [e["keyword"] for e in entries] == ["kw2", "kw1", "kw0"]
 
+    async def test_entry_carries_every_match_not_only_the_first(
+        self, auth_client, sender, db_session
+    ) -> None:  # noqa: ANN001
+        """All match positions survive the round-trip as JSON, not just the first.
+
+        Saving only the first hit made the history page able to reopen a single
+        moment, so a keyword that occurs all over a video could never be
+        revisited anywhere but its first appearance. match_timestamps holds the
+        whole list; progress_seconds stays the first hit so the existing
+        single-moment replay is untouched.
+        """
+        from app.models import SearchHistory, User
+        from app.repositories.search_history_repository import SearchHistoryRepository
+
+        await self._sign_in(auth_client, sender)
+        user = await db_session.scalar(
+            __import__("sqlalchemy").select(User).where(User.email == "hist@example.com")
+        )
+        every = [10, 754, 3600]
+        # Through the repository, the way the search route writes it, so a
+        # regression that keeps only the leading hit is actually caught here.
+        await SearchHistoryRepository(db_session).record(
+            user_id=user.id,
+            video_id="vmulti",
+            keyword="brain",
+            status="found",
+            progress_seconds=every[0],
+            match_timestamps=every,
+            match_results=[{"progress_seconds": s, "timestamp": f"00:{s:02d}"} for s in every],
+        )
+        stored = await db_session.scalar(
+            __import__("sqlalchemy").select(SearchHistory).where(
+                SearchHistory.video_id == "vmulti"
+            )
+        )
+        assert stored.match_timestamps == every
+        assert stored.match_results is not None
+        assert len(stored.match_results) == 3
+
+        entry = (await auth_client.get("/api/v1/history")).json()["entries"][0]
+        assert entry["match_timestamps"] == every
+        assert entry["progress_seconds"] == 10
+        assert entry["match_results"] == [
+            {"progress_seconds": s, "timestamp": f"00:{s:02d}"} for s in every
+        ]
+
+    async def test_entry_without_matches_reports_null(self, auth_client, sender, db_session) -> None:  # noqa: ANN001
+        """A not_found entry keeps nulls, so the client can tell 'no match'
+        from 'recorded before this column existed' — both simply have no list."""
+        from app.models import SearchHistory, User
+
+        await self._sign_in(auth_client, sender)
+        user = await db_session.scalar(
+            __import__("sqlalchemy").select(User).where(User.email == "hist@example.com")
+        )
+        db_session.add(
+            SearchHistory(
+                user_id=user.id,
+                video_id="vnone",
+                keyword="ghost",
+                status="not_found",
+                progress_seconds=None,
+                match_timestamps=None,
+                match_results=None,
+            )
+        )
+        await db_session.flush()
+
+        entry = (await auth_client.get("/api/v1/history")).json()["entries"][0]
+        assert entry["match_timestamps"] is None
+        assert entry["progress_seconds"] is None
+        assert entry["match_results"] is None
+
+    async def test_a_real_search_is_stored_with_every_result_it_returned(
+        self, auth_client, sender, db_session
+    ) -> None:
+        """A live search files the whole result set, not just its first moment.
+
+        The history page replays a saved search by showing what it found. That
+        only works if the route stored the results rather than a position, so
+        this drives the real endpoint rather than writing the row by hand: the
+        point is what the search path actually persists.
+        """
+        from datetime import UTC, datetime
+
+        from app.models import TranscriptWord, Video
+
+        await self._sign_in(auth_client, sender)
+        video = Video(
+            youtube_url="https://www.youtube.com/watch?v=foundvid001",
+            video_id="foundvid001",
+            title="Said it twice",
+            language="en",
+            transcribed_at=datetime.now(UTC),
+        )
+        db_session.add(video)
+        await db_session.flush()
+        # The phrase appears twice, so a route that saved only the leading hit
+        # cannot pass this.
+        for word_index, (word, start) in enumerate(
+            [("say", 5.0), ("it", 5.4), ("twice", 5.9), ("say", 700.0), ("it", 700.4), ("twice", 700.9)]
+        ):
+            db_session.add(
+                TranscriptWord(
+                    video_id=video.id,
+                    word_index=word_index,
+                    word=word,
+                    start_time=start,
+                    end_time=start + 0.4,
+                )
+            )
+        await db_session.flush()
+
+        response = await auth_client.post(
+            "/api/search",
+            json={"youtube_url": video.youtube_url, "keyword": "say it twice"},
+            headers={"X-CSRF-Token": "csrf-secret-for-tests"},
+        )
+        assert response.status_code == 200, response.text
+        assert len(response.json()["results"]) == 2
+
+        entry = (await auth_client.get("/api/v1/history")).json()["entries"][0]
+        assert entry["keyword"] == "say it twice"
+        assert len(entry["match_results"]) == 2
+        # Snippet included: the replayed row shows the words, not a bare second.
+        assert entry["match_results"][0]["text_snippet"].startswith("say it twice")
+        assert entry["match_timestamps"] == [5, 700]
+        assert entry["progress_seconds"] == 5
+
+    async def test_a_search_that_found_nothing_is_stored_as_found_nothing(
+        self, auth_client, sender, db_session
+    ) -> None:
+        """A no-match search is recorded as such, so replay can say so honestly.
+
+        Saving it as a match at 00:00 is the failure this guards: reopening the
+        entry would then show a result that was never found.
+        """
+        from datetime import UTC, datetime
+
+        from app.models import TranscriptWord, Video
+
+        await self._sign_in(auth_client, sender)
+        video = Video(
+            youtube_url="https://www.youtube.com/watch?v=missvid0001",
+            video_id="missvid0001",
+            title="Never said it",
+            language="en",
+            transcribed_at=datetime.now(UTC),
+        )
+        db_session.add(video)
+        await db_session.flush()
+        db_session.add(
+            TranscriptWord(
+                video_id=video.id, word_index=0, word="hello", start_time=0.0, end_time=0.4
+            )
+        )
+        await db_session.flush()
+
+        response = await auth_client.post(
+            "/api/search",
+            json={"youtube_url": video.youtube_url, "keyword": "never said it"},
+            headers={"X-CSRF-Token": "csrf-secret-for-tests"},
+        )
+        assert response.json()["status"] == "not_found"
+
+        entry = (await auth_client.get("/api/v1/history")).json()["entries"][0]
+        assert entry["status"] == "not_found"
+        assert entry["progress_seconds"] is None
+        assert entry["match_results"] is None
+
     async def test_entries_never_leak_across_users(self, auth_client, sender, db_session) -> None:  # noqa: ANN001
         from sqlalchemy import select
 
@@ -635,6 +846,307 @@ class TestHistoryEndpoint:
             "/api/v1/history", headers={"X-CSRF-Token": "csrf-secret-for-tests"}
         )
         assert ok.status_code == 204
+
+    async def test_entries_carry_the_replay_position_and_title(
+        self, auth_client, sender, db_session
+    ) -> None:  # noqa: ANN001
+        """A saved search reopens where it was found, under the video's name."""
+        from sqlalchemy import select
+
+        from app.models import SearchHistory, User
+
+        await self._sign_in(auth_client, sender)
+        user = await db_session.scalar(select(User).where(User.email == "hist@example.com"))
+        db_session.add(
+            SearchHistory(
+                user_id=user.id,
+                video_id="abc123",
+                keyword="how to type faster",
+                status="found",
+                progress_seconds=754,
+                video_title="Typing without looking down",
+            )
+        )
+        await db_session.flush()
+
+        response = await auth_client.get("/api/v1/history")
+        entry = response.json()["entries"][0]
+        assert entry["progress_seconds"] == 754
+        assert entry["video_title"] == "Typing without looking down"
+
+    async def test_a_first_search_picks_up_the_title_that_arrived_later(
+        self, auth_client, sender, db_session
+    ) -> None:  # noqa: ANN001
+        """A row written before the transcript existed still gets named.
+
+        The first search of an unseen video files its history row the moment the
+        transcription is queued, and at that point the videos row has no title
+        yet - the title only lands with the transcript. Nothing used to carry it
+        back, so that first search was listed as "video without a title" for
+        good, even though the title was sitting in the videos table.
+        """
+        from sqlalchemy import select
+
+        from app.models import SearchHistory, User, Video
+
+        await self._sign_in(auth_client, sender)
+        user = await db_session.scalar(select(User).where(User.email == "hist@example.com"))
+        db_session.add(
+            Video(
+                youtube_url="https://www.youtube.com/watch?v=abc123",
+                video_id="abc123",
+                title="Buy a brain at any price",
+            )
+        )
+        db_session.add(
+            SearchHistory(
+                user_id=user.id,
+                video_id="abc123",
+                keyword="brain",
+                status="processing",
+                video_title=None,
+            )
+        )
+        await db_session.flush()
+
+        response = await auth_client.get("/api/v1/history")
+        assert response.json()["entries"][0]["video_title"] == "Buy a brain at any price"
+
+    async def test_a_snapshotted_title_is_not_overwritten_by_the_live_one(
+        self, auth_client, sender, db_session
+    ) -> None:  # noqa: ANN001
+        """The snapshot is the point: it is what the video was called at the time."""
+        from sqlalchemy import select
+
+        from app.models import SearchHistory, User, Video
+
+        await self._sign_in(auth_client, sender)
+        user = await db_session.scalar(select(User).where(User.email == "hist@example.com"))
+        db_session.add(
+            Video(
+                youtube_url="https://www.youtube.com/watch?v=abc123",
+                video_id="abc123",
+                title="A completely different name now",
+            )
+        )
+        db_session.add(
+            SearchHistory(
+                user_id=user.id,
+                video_id="abc123",
+                keyword="brain",
+                status="found",
+                video_title="The name it had back then",
+            )
+        )
+        await db_session.flush()
+
+        response = await auth_client.get("/api/v1/history")
+        assert response.json()["entries"][0]["video_title"] == "The name it had back then"
+
+    async def test_a_first_search_picks_up_the_position_that_arrived_later(
+        self, auth_client, sender, db_session
+    ) -> None:  # noqa: ANN001
+        """A row written before results existed recovers its replay position.
+
+        The first search of an unseen video is filed the moment the
+        transcription is queued, so it has no position to store - there are no
+        results yet. Nothing used to update it once the transcript landed, so
+        the row kept a NULL position and the history page had to render it at
+        00:00 even though the search had matched at 12:34.
+        """
+        from datetime import UTC, datetime
+
+        from sqlalchemy import select
+
+        from app.models import SearchHistory, TranscriptWord, User, Video
+
+        await self._sign_in(auth_client, sender)
+        user = await db_session.scalar(select(User).where(User.email == "hist@example.com"))
+        video = Video(
+            youtube_url="https://www.youtube.com/watch?v=pos123",
+            video_id="pos123",
+            title="Buy a brain at any price",
+            transcribed_at=datetime.now(UTC),
+        )
+        db_session.add(video)
+        await db_session.flush()
+        db_session.add_all(
+            [
+                TranscriptWord(
+                    video_id=video.id, word_index=0, word="buy", start_time=10.0, end_time=10.4
+                ),
+                TranscriptWord(
+                    video_id=video.id, word_index=1, word="a", start_time=10.5, end_time=10.6
+                ),
+                TranscriptWord(
+                    video_id=video.id,
+                    word_index=2,
+                    word="brain",
+                    start_time=754.0,
+                    end_time=754.8,
+                ),
+            ]
+        )
+        db_session.add(
+            SearchHistory(
+                user_id=user.id,
+                video_id="pos123",
+                keyword="brain",
+                status="processing",
+                progress_seconds=None,
+            )
+        )
+        await db_session.flush()
+
+        response = await auth_client.get("/api/v1/history")
+        entry = response.json()["entries"][0]
+        assert entry["progress_seconds"] == 754
+        # The whole result set is recovered, not just the opening position: the
+        # history page has to be able to show every hit for this keyword, and a
+        # bare seconds list cannot carry the snippets it shows them in.
+        assert entry["match_results"] == [
+            {
+                "timestamp": "12:34",
+                "progress_seconds": 754.0,
+                "text_snippet": "buy a brain",
+            }
+        ]
+        assert entry["match_timestamps"] == [754]
+
+    async def test_the_recovered_position_is_stored_so_later_pages_do_not_research(
+        self, auth_client, sender, db_session
+    ) -> None:  # noqa: ANN001
+        """The backfill happens once; after that the position is an ordinary snapshot."""
+        from datetime import UTC, datetime
+
+        from sqlalchemy import select
+
+        from app.models import SearchHistory, TranscriptWord, User, Video
+
+        await self._sign_in(auth_client, sender)
+        user = await db_session.scalar(select(User).where(User.email == "hist@example.com"))
+        video = Video(
+            youtube_url="https://www.youtube.com/watch?v=pos123",
+            video_id="pos123",
+            title="Buy a brain at any price",
+            transcribed_at=datetime.now(UTC),
+        )
+        db_session.add(video)
+        await db_session.flush()
+        db_session.add(
+            TranscriptWord(
+                video_id=video.id, word_index=0, word="brain", start_time=754.0, end_time=754.8
+            )
+        )
+        db_session.add(
+            SearchHistory(
+                user_id=user.id, video_id="pos123", keyword="brain", status="processing"
+            )
+        )
+        await db_session.flush()
+
+        assert (await auth_client.get("/api/v1/history")).json()["entries"][0][
+            "progress_seconds"
+        ] == 754
+        # Re-read from the database so this asserts the stored row, not the
+        # in-memory object the request may have left mutated in the session.
+        row = await db_session.scalar(
+            select(SearchHistory)
+            .where(SearchHistory.video_id == "pos123")
+            .execution_options(populate_existing=True)
+        )
+        assert row.progress_seconds == 754
+
+    async def test_a_position_that_was_already_recorded_is_left_alone(
+        self, auth_client, sender, db_session
+    ) -> None:  # noqa: ANN001
+        """Only gaps are filled: a recorded position is the deliberate snapshot."""
+        from datetime import UTC, datetime
+
+        from sqlalchemy import select
+
+        from app.models import SearchHistory, TranscriptWord, User, Video
+
+        await self._sign_in(auth_client, sender)
+        user = await db_session.scalar(select(User).where(User.email == "hist@example.com"))
+        video = Video(
+            youtube_url="https://www.youtube.com/watch?v=pos123",
+            video_id="pos123",
+            title="Buy a brain at any price",
+            transcribed_at=datetime.now(UTC),
+        )
+        db_session.add(video)
+        await db_session.flush()
+        db_session.add(
+            TranscriptWord(
+                video_id=video.id, word_index=0, word="brain", start_time=754.0, end_time=754.8
+            )
+        )
+        db_session.add(
+            SearchHistory(
+                user_id=user.id,
+                video_id="pos123",
+                keyword="brain",
+                status="found",
+                progress_seconds=12,
+            )
+        )
+        await db_session.flush()
+
+        assert (await auth_client.get("/api/v1/history")).json()["entries"][0][
+            "progress_seconds"
+        ] == 12
+
+    async def test_a_video_that_was_never_transcribed_keeps_its_unknown_position(
+        self, auth_client, sender, db_session
+    ) -> None:  # noqa: ANN001
+        """No transcript means no match to recover, and NULL says so honestly."""
+        from sqlalchemy import select
+
+        from app.models import SearchHistory, User, Video
+
+        await self._sign_in(auth_client, sender)
+        user = await db_session.scalar(select(User).where(User.email == "hist@example.com"))
+        db_session.add(
+            Video(
+                youtube_url="https://www.youtube.com/watch?v=pos123",
+                video_id="pos123",
+                title="Never finished",
+            )
+        )
+        db_session.add(
+            SearchHistory(
+                user_id=user.id, video_id="pos123", keyword="brain", status="processing"
+            )
+        )
+        await db_session.flush()
+
+        assert (await auth_client.get("/api/v1/history")).json()["entries"][0][
+            "progress_seconds"
+        ] is None
+
+    async def test_a_search_with_no_position_reports_null_not_zero(
+        self, auth_client, sender, db_session
+    ) -> None:  # noqa: ANN001
+        """Null means "unknown", which is not the same claim as "at the start".
+
+        Collapsing the two would silently drag every pre-timestamp entry to 00:00
+        and make it indistinguishable from a search that genuinely matched at the
+        very beginning, so the client cannot tell an old row from a real zero.
+        """
+        from sqlalchemy import select
+
+        from app.models import SearchHistory, User
+
+        await self._sign_in(auth_client, sender)
+        user = await db_session.scalar(select(User).where(User.email == "hist@example.com"))
+        db_session.add(SearchHistory(user_id=user.id, video_id="v", keyword="kw", status="found"))
+        await db_session.flush()
+
+        response = await auth_client.get("/api/v1/history")
+        entry = response.json()["entries"][0]
+        assert entry["progress_seconds"] is None
+        assert entry["video_title"] is None
 
 
 class TestBearerAuthentication:
@@ -772,6 +1284,108 @@ class TestSearchRecordsHistory:
         auth_client.cookies.set("jumpto_session", "not-a-real-token", domain="test")
         response = await self._search(auth_client)
         assert response.status_code in (200, 202)
+
+    async def test_a_hit_snapshots_where_it_matched(self, auth_client, sender, db_session) -> None:  # noqa: ANN001
+        """A saved keyword reopens where it was found.
+
+        The history page promises that clicking a saved search lands on the
+        moment the quote was found. That promise is only keepable if the write
+        captures the position while the match is in hand, because nothing
+        recomputes it later. The match the search reported is therefore the match
+        that must have been stored.
+        """
+        from sqlalchemy import select
+
+        from app.models import SearchHistory, User
+
+        await self._sign_in(auth_client, sender, "hit@example.com")
+        video = await _seed_transcribed_video(
+            db_session, "aB3dEfGhIj1", "Typing without looking down"
+        )
+        response = await auth_client.post(
+            "/api/search", json={"youtube_url": video.youtube_url, "keyword": "hello world"}
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] == "found"
+
+        user = await db_session.scalar(select(User).where(User.email == "hit@example.com"))
+        row = await db_session.scalar(
+            select(SearchHistory).where(
+                SearchHistory.user_id == user.id, SearchHistory.video_id == "aB3dEfGhIj1"
+            )
+        )
+        assert row is not None, "the signed-in search was never filed in history"
+        assert row.video_title == "Typing without looking down"
+        assert row.progress_seconds == int(response.json()["results"][0]["progress_seconds"])
+
+    async def test_a_miss_records_no_position(self, auth_client, sender, db_session) -> None:  # noqa: ANN001
+        """A search that found nothing has nothing to replay to.
+
+        Recording 0 would claim the quote sat at the very start of the video,
+        which is a different claim from "we do not know where it was" — and the
+        client can only fall back to the top honestly if the two stay distinct.
+        """
+        from sqlalchemy import select
+
+        from app.models import SearchHistory, User
+
+        await self._sign_in(auth_client, sender, "miss@example.com")
+        video = await _seed_transcribed_video(db_session, "kL4mNoPqRs2", "Nothing to find here")
+        response = await auth_client.post(
+            "/api/search",
+            json={"youtube_url": video.youtube_url, "keyword": "absentwordabsentword"},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] == "not_found"
+
+        user = await db_session.scalar(select(User).where(User.email == "miss@example.com"))
+        row = await db_session.scalar(
+            select(SearchHistory).where(
+                SearchHistory.user_id == user.id, SearchHistory.video_id == "kL4mNoPqRs2"
+            )
+        )
+        assert row is not None
+        assert row.progress_seconds is None
+        assert row.video_title == "Nothing to find here"
+
+    async def test_a_keyword_spoken_twice_replays_the_first_time_it_was_said(
+        self, auth_client, sender, db_session
+    ) -> None:  # noqa: ANN001
+        """A repeated keyword replays the first mention, to the whole second.
+
+        Two properties hide behind one saved position, and either could go
+        wrong unnoticed: it must be the *first* of several matches (a video that
+        says a phrase again ten minutes later should not replay the later one),
+        and it must be the truncated second (1.6s is where the word starts, and
+        rounding up to 2s lands the visitor just after the quote they wanted).
+        """
+        from sqlalchemy import select
+
+        from app.models import SearchHistory, User
+        from tests.utils.job_driver import FAKE_TRANSCRIPT_WORDS
+
+        await self._sign_in(auth_client, sender, "twice@example.com")
+        video = await _seed_transcribed_video(db_session, "dQw4w9WgXcQ", "Said it twice")
+        response = await auth_client.post(
+            "/api/search", json={"youtube_url": video.youtube_url, "keyword": "test"}
+        )
+        assert response.status_code == 200, response.text
+        reported = response.json()["results"]
+
+        # Guard the guard: if the fixture ever stops repeating the word, this
+        # test would keep passing while proving nothing about first-vs-last.
+        assert len(reported) > 1, f"fixture must repeat the keyword, got {len(reported)} match(es)"
+        expected = int(FAKE_TRANSCRIPT_WORDS[5]["start_time"])
+
+        user = await db_session.scalar(select(User).where(User.email == "twice@example.com"))
+        row = await db_session.scalar(
+            select(SearchHistory).where(
+                SearchHistory.user_id == user.id, SearchHistory.video_id == "dQw4w9WgXcQ"
+            )
+        )
+        assert row is not None
+        assert row.progress_seconds == expected
+        assert row.progress_seconds == int(reported[0]["progress_seconds"])
 
 
 class TestGoogleEndpoint:

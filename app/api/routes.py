@@ -136,7 +136,15 @@ async def search(
     """
     caller_id = await _optional_caller_id(request_object, settings, session)
 
-    async def remember(status: str) -> None:
+    async def remember(
+        status: str,
+        progress_seconds: int | None = None,
+        match_timestamps: list[int] | None = None,
+        match_results: list[dict[str, object]] | None = None,
+    ) -> None:
+        # The title is snapshotted here, while the row is in hand. The history
+        # page then keeps calling the video whatever it was called at the moment
+        # of the search, even if the transcript is refetched and the name changes.
         await recorder.record(
             user_id=caller_id,
             video_id=youtube_info.video_id,
@@ -144,6 +152,10 @@ async def search(
             status=status,
             locale=_client_locale(request_object),
             source=_client_source(request_object),
+            progress_seconds=progress_seconds,
+            video_title=getattr(video, "title", None) if video is not None else None,
+            match_timestamps=match_timestamps,
+            match_results=match_results,
         )
 
     youtube_info = validate_youtube_url(str(request.youtube_url))
@@ -159,7 +171,20 @@ async def search(
             return SearchResponseCached(
                 status=SearchStatus.NOT_FOUND, results=[], no_speech=no_speech
             )
-        await remember(STATUS_FOUND)
+        # Where the first match sat, so reopening this entry from the history
+        # page resumes at the moment the visitor was reading instead of at 00:00.
+        # Rounded to whole seconds: that is the resolution the player honours
+        # anyway, and a fractional column would imply a precision it lacks.
+        await remember(
+            STATUS_FOUND,
+            progress_seconds=int(results[0].progress_seconds),
+            match_timestamps=[int(r.progress_seconds) for r in results],
+            # The whole result set, snippet included: reopening this entry from
+            # history should show the same list the search produced, not just
+            # where to seek. Stored as plain JSON via model_dump so the shape is
+            # exactly what the client already consumes from this endpoint.
+            match_results=[r.model_dump(mode="json") for r in results],
+        )
         return SearchResponseCached(status="found", results=results)
 
     if not video:

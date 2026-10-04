@@ -1,4 +1,4 @@
-"""Transactional email over Gmail SMTP.
+"""Transactional email over SMTP.
 
 Delivery is offloaded to a thread so the event loop is not blocked on a network
 round trip, and a failure never propagates: a failed verification mail must not
@@ -17,11 +17,18 @@ from app.services.ports import AuthEmail
 logger = get_logger(__name__)
 
 
-class GmailSmtpEmailSender:
-    """Sends mail through a Gmail account using an app password.
+class SmtpEmailSender:
+    """Sends mail through an SMTP mailbox.
 
-    The app password grants IMAP as well as SMTP, so it is a mailbox
-    credential and must never be logged or committed.
+    Providers disagree about how to secure the connection: Gmail requires
+    STARTTLS on 587 (an encrypted upgrade of a plain socket), while Hostinger
+    documents implicit TLS on 465 (the socket is encrypted from the first byte,
+    which Python spells ``SMTP_SSL``). Using the wrong one for a provider fails
+    at connect or at handshake, so the mode is chosen from the port unless the
+    caller overrides it.
+
+    The password grants IMAP as well as SMTP, so it is a mailbox credential and
+    must never be logged or committed.
     """
 
     def __init__(
@@ -33,6 +40,7 @@ class GmailSmtpEmailSender:
         app_password: str,
         from_email: str,
         from_name: str = "Qfza",
+        use_ssl: bool | None = None,
     ) -> None:
         self.host = host
         self.port = port
@@ -40,6 +48,9 @@ class GmailSmtpEmailSender:
         self.app_password = app_password
         self.from_email = from_email
         self.from_name = from_name
+        # Implicit TLS is the convention for 465; STARTTLS for everything else.
+        # None keeps the mapping so the common case needs no extra setting.
+        self.use_ssl = (port == 465) if use_ssl is None else use_ssl
 
     @property
     def is_configured(self) -> bool:
@@ -54,10 +65,29 @@ class GmailSmtpEmailSender:
         message.set_content(email.body)
         return message
 
-    def _send_blocking(self, message: EmailMessage) -> None:
-        with smtplib.SMTP(self.host, self.port, timeout=20) as smtp:
-            smtp.starttls()
+    def _open(self) -> smtplib.SMTP:
+        """Open an authenticated SMTP session on an encrypted socket.
+
+        Both paths are encrypted: ``SMTP_SSL`` negotiates TLS before the SMTP
+        greeting, ``starttls`` upgrades after it. Credentials only ever cross
+        the encrypted channel.
+        """
+        if self.use_ssl:
+            smtp = smtplib.SMTP_SSL(self.host, self.port, timeout=20)
+        else:
+            smtp = smtplib.SMTP(self.host, self.port, timeout=20)
+        try:
+            if not self.use_ssl:
+                smtp.starttls()
             smtp.login(self.user, self.app_password)
+        except Exception:
+            # Do not leave a half-authenticated socket open on a failed upgrade.
+            smtp.close()
+            raise
+        return smtp
+
+    def _send_blocking(self, message: EmailMessage) -> None:
+        with self._open() as smtp:
             smtp.send_message(message)
 
     async def send(self, email: AuthEmail) -> None:

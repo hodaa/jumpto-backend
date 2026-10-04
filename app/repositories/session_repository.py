@@ -96,6 +96,26 @@ class SessionRepository:
             .values(revoked_at=datetime.now(UTC))
         )
 
+    async def revoke_all_for_user_except(
+        self, user_id: uuid.UUID, *, keep_session_id: uuid.UUID
+    ) -> None:
+        """Revoke every session but the caller's own (in-place password change).
+
+        A password change made from an already-signed-in browser has to end the
+        *other* sessions without ending this one, or the person who just proved
+        they own the password would be signed straight out of the tab they used
+        to prove it.
+        """
+        await self.session.execute(
+            update(Session)
+            .where(
+                Session.user_id == user_id,
+                Session.id != keep_session_id,
+                Session.revoked_at.is_(None),
+            )
+            .values(revoked_at=datetime.now(UTC))
+        )
+
     async def sweep_expired(self, *, batch_limit: int = 1000) -> int:
         """Delete expired or revoked rows.
 
@@ -143,12 +163,14 @@ class UserRepository:
         email: str,
         password_hash: str | None,
         google_sub: str | None = None,
+        full_name: str | None = None,
     ) -> User:
         """Create a user row."""
         user = User(
             email=email.lower(),
             password_hash=password_hash,
             google_sub=google_sub,
+            full_name=full_name,
         )
         self.session.add(user)
         await self.session.flush()
@@ -159,6 +181,12 @@ class UserRepository:
         """Attach a Google identity to an existing user."""
         await self.session.execute(
             update(User).where(User.id == user_id).values(google_sub=google_sub)
+        )
+
+    async def set_full_name(self, user_id: uuid.UUID, full_name: str) -> None:
+        """Replace the stored display name."""
+        await self.session.execute(
+            update(User).where(User.id == user_id).values(full_name=full_name)
         )
 
     async def mark_email_verified(self, user_id: uuid.UUID) -> None:

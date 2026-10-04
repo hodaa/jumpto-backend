@@ -22,6 +22,7 @@ Google a hard dependency of every login.
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from dataclasses import dataclass
 
@@ -36,6 +37,29 @@ JWKS_URL = "https://www.googleapis.com/oauth2/v3/certs"
 GOOGLE_ISSUERS = ("accounts.google.com", "https://accounts.google.com")
 KEY_CACHE_SECONDS = 3600
 REQUIRED_ALGORITHM = "RS256"
+NAME_MAX_LENGTH = 255
+# Google echoes back whatever the profile holds, which may include newlines and
+# other control characters. They have no business in a stored name or in a log
+# line, so they are folded into spaces rather than kept.
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _read_name(claims: dict[str, object]) -> str | None:
+    """Pull a display name out of verified claims, or None if there is none.
+
+    Google normally sends ``name``, but a profile can be partially filled in,
+    so the given/family parts are composed as a fallback. Anything that is not
+    a usable string - a missing claim, a null, a nested object - yields None
+    rather than a stringified blob, because this value is stored and rendered.
+    """
+    raw = claims.get("name")
+    if not isinstance(raw, str):
+        parts = [claims.get("given_name"), claims.get("family_name")]
+        raw = " ".join(part for part in parts if isinstance(part, str))
+    cleaned = " ".join(_CONTROL_CHARS.sub(" ", raw).split())
+    if not cleaned:
+        return None
+    return cleaned[:NAME_MAX_LENGTH]
 
 
 @dataclass(frozen=True)
@@ -44,6 +68,9 @@ class GoogleIdentity:
 
     subject: str
     email: str
+    #: Google's display name, or None when the claim is absent or unusable. The
+    #: caller must treat None as "fall back to the email", never as an error.
+    full_name: str | None = None
 
 
 class GoogleTokenVerifier:
@@ -112,7 +139,11 @@ class GoogleTokenVerifier:
             logger.info("Rejected a Google account whose email is not verified")
             return None
 
-        return GoogleIdentity(subject=subject, email=email.lower())
+        return GoogleIdentity(
+            subject=subject,
+            email=email.lower(),
+            full_name=_read_name(claims),
+        )
 
     def verify(self, token: str) -> GoogleIdentity | None:
         """Synchronous verify, for callers outside the event loop."""

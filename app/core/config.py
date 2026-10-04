@@ -7,8 +7,9 @@ from datetime import timedelta
 from functools import lru_cache
 from ipaddress import IPv4Network, IPv6Network, ip_network
 from typing import Annotated, Literal
+from urllib.parse import urlparse
 
-from pydantic import BeforeValidator, Field
+from pydantic import BeforeValidator, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -21,6 +22,9 @@ def _coerce_bool(value: str | bool | int) -> bool:
         if value in ("1", "true", "yes"):
             return True
     return bool(value)
+
+
+PRODUCTION_SITE_URL = "https://qfza.app"
 
 
 class Settings(BaseSettings):
@@ -121,7 +125,7 @@ class Settings(BaseSettings):
     # CSRF: a per-deployment secret echoed in a header on cookie-authenticated
     # mutations. Not a credential, so it may sit in the frontend bundle.
     csrf_token: str = Field(
-        default="",
+        min_length=16,
         description="Shared secret the web client sends as X-CSRF-Token",
     )
     csrf_header_name: str = Field(
@@ -152,19 +156,49 @@ class Settings(BaseSettings):
         ),
     )
 
-    # Email (verification / password reset) via Gmail SMTP
+    # Email (verification / password reset) over SMTP
     smtp_host: str = Field(default="smtp.gmail.com", description="SMTP host")
     smtp_port: int = Field(default=587, ge=1, description="SMTP port")
     smtp_user: str = Field(default="", description="SMTP account address")
     smtp_app_password: str = Field(
         default="",
-        description="Gmail app password. This grants IMAP as well as SMTP - treat as a secret.",
+        description="Mailbox password. Grants IMAP as well as SMTP - treat as a secret.",
+    )
+    smtp_use_ssl: bool | None = Field(
+        default=None,
+        description=(
+            "True for implicit TLS (Hostinger 465), False for STARTTLS (Gmail 587). "
+            "Leave unset to infer it from the port."
+        ),
     )
     email_from: str = Field(default="", description="Sender address for outgoing mail")
     email_from_name: str = Field(default="Qfza", description="Sender display name")
+
+    @field_validator("smtp_user")
+    @classmethod
+    def _smtp_user_must_be_an_address(cls, value: str) -> str:
+        """Reject a hostname in the username slot at startup.
+
+        The most common way this breaks is pasting the server hostname into
+        SMTP_USER because SMTP_HOST is missing, which leaves the host on its
+        default and looks configured: mail is then attempted against the wrong
+        server as a nonexistent user and the send fails quietly. Refusing to
+        start turns that into one obvious error instead of undelivered mail.
+        """
+        if value and "@" not in value:
+            raise ValueError(
+                "SMTP_USER must be a full email address such as you@example.com, "
+                f"not {value!r}. If this is your mail server's hostname, move it to SMTP_HOST."
+            )
+        return value
+
     public_site_url: str = Field(
-        default="https://qfza.app",
-        description="Public origin, used to build links inside emails",
+        default="",
+        description=(
+            "Public origin, used to build the links inside emails. Defaults to "
+            "localhost in development and the production origin otherwise, so a "
+            "local request never mails a real person a production link."
+        ),
     )
     password_reset_token_ttl_minutes: int = Field(
         default=30,
@@ -213,6 +247,56 @@ class Settings(BaseSettings):
     def cookie_is_secure(self) -> bool:
         """Whether the session cookie should carry the Secure attribute."""
         return not self.is_development
+
+    @model_validator(mode="after")
+    def _cookie_name_matches_secure_attribute(self) -> Settings:
+        """Keep the cookie name and its ``Secure`` attribute in agreement.
+
+        A browser rejects a ``__Host-`` cookie that arrives without ``Secure``,
+        and it does so silently: sign-in returns the account, the page shows it
+        signed in, and then every state-changing request fails as if the
+        session had expired. So the prefix is only used where ``Secure`` will
+        accompany it, and dropped otherwise.
+        """
+        if not self.cookie_is_secure and self.session_cookie_name.startswith("__Host-"):
+            self.session_cookie_name = self.session_cookie_name.removeprefix("__Host-")
+        return self
+
+    @model_validator(mode="after")
+    def _public_site_url_matches_environment(self) -> Settings:
+        """Point emailed links at whichever origin this process actually serves.
+
+        Every password-reset and verification link is built from this value, so
+        both ways of getting it wrong are silent and both are fatal to whoever
+        receives the mail. A local run left on the production origin sends a
+        developer to the deployed site, where their token means nothing; a
+        deployed run left on a loopback origin sends every real recipient a
+        ``localhost`` link that can never open. So the origin follows the
+        environment unless stated explicitly, and a production loopback is a
+        boot failure rather than a mailer that quietly burns tokens.
+        """
+        configured = self.public_site_url.strip().rstrip("/")
+        if not configured:
+            configured = "http://localhost:5173" if self.is_development else PRODUCTION_SITE_URL
+        self.public_site_url = configured
+
+        try:
+            parsed = urlparse(configured)
+        except ValueError as exc:
+            raise ValueError(f"PUBLIC_SITE_URL is not a valid URL: {configured!r}") from exc
+        if not parsed.scheme or not parsed.netloc:
+            raise ValueError(f"PUBLIC_SITE_URL is not a valid URL: {configured!r}")
+
+        if not self.is_development:
+            loopback = parsed.hostname in {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
+            if loopback or parsed.scheme != "https":
+                raise ValueError(
+                    f"PUBLIC_SITE_URL is {configured!r} but this is a production "
+                    "deployment. Every password-reset and verification email would "
+                    "carry a link that cannot open for a real recipient. Set it to "
+                    f"the public origin, such as {PRODUCTION_SITE_URL}."
+                )
+        return self
 
     @property
     def trusted_proxy_list(self) -> list[IPv4Network | IPv6Network]:

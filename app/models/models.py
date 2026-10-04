@@ -14,7 +14,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from sqlalchemy.dialects.postgresql import TSVECTOR, UUID
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -188,6 +188,10 @@ class User(Base):
     # Nullable: a Google-only account has no password.
     password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
     google_sub: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True)
+    # The name Google returns on sign-in, refreshed from it each time. Nullable:
+    # a password-only account has none, and so does a Google account until its
+    # next sign-in. Greeting falls back to the email when this is null.
+    full_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     email_verified_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -269,6 +273,24 @@ class SearchHistory(Base):
     locale: Mapped[str | None] = mapped_column(String(10), nullable=True)
     source: Mapped[str | None] = mapped_column(String(50), nullable=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="processing")
+    # Where the first match sat when the search ran, so the entry can be replayed
+    # at the moment it was found rather than from the top of the video. Null
+    # until a transcript exists, and on every row written before column 005.
+    progress_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # All match positions (seconds) when the search ran, so the history page can
+    # show every moment the keyword was found. Null on rows written before this
+    # column existed.
+    match_timestamps: Mapped[list[int] | None] = mapped_column(JSONB, nullable=True)
+    # Every result the search returned, snapshotted whole: timestamp, position and
+    # the snippet around the phrase. match_timestamps only says *where* the matches
+    # sat, which is enough to seek but not to show what was found; this is what the
+    # history page replays. Null on rows written before this column existed and on
+    # any row whose transcript has not resolved yet.
+    match_results: Mapped[list[dict[str, object]] | None] = mapped_column(JSONB, nullable=True)
+    # Snapshotted at search time on purpose. The videos row is the live truth
+    # and can be refetched or renamed; this is what the video was called when the
+    # visitor searched it, which is what they will recognise.
+    video_title: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

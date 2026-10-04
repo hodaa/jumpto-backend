@@ -43,6 +43,8 @@ from app.repositories.search_history_repository import (
     SearchHistoryRepository,
     encode_cursor,
 )
+from app.repositories.transcript_word_repository import TranscriptWordRepository
+from app.repositories.video_repository import VideoRepository
 from app.schemas.auth import (
     AuthResponse,
     AuthUserResponse,
@@ -51,6 +53,7 @@ from app.schemas.auth import (
     HistoryEntry,
     HistoryResponse,
     LoginRequest,
+    PasswordChangeRequest,
     PasswordResetConfirmRequest,
     PasswordResetRequest,
     RegisterRequest,
@@ -58,23 +61,25 @@ from app.schemas.auth import (
     VerifyEmailRequest,
 )
 from app.services.auth import AuthIdentity, AuthService, HistoryService
-from app.services.email import GmailSmtpEmailSender
+from app.services.email import SmtpEmailSender
 from app.services.google import GoogleTokenVerifier
+from app.services.search import SearchService
 
 router = APIRouter()
 
 logger = get_logger(__name__)
 
 
-def get_email_sender(settings: Settings = Depends(get_settings)) -> GmailSmtpEmailSender:
+def get_email_sender(settings: Settings = Depends(get_settings)) -> SmtpEmailSender:
     """Build the transactional mail sender."""
-    return GmailSmtpEmailSender(
+    return SmtpEmailSender(
         host=settings.smtp_host,
         port=settings.smtp_port,
         user=settings.smtp_user,
         app_password=settings.smtp_app_password,
         from_email=settings.email_from or settings.smtp_user,
         from_name=settings.email_from_name,
+        use_ssl=settings.smtp_use_ssl,
     )
 
 
@@ -89,7 +94,7 @@ def get_google_verifier(settings: Settings = Depends(get_settings)) -> GoogleTok
 async def get_auth_service(
     db: AsyncSession = Depends(get_db_session),
     settings: Settings = Depends(get_settings),
-    email_sender: GmailSmtpEmailSender = Depends(get_email_sender),
+    email_sender: SmtpEmailSender = Depends(get_email_sender),
     google_verifier: GoogleTokenVerifier = Depends(get_google_verifier),
 ) -> AuthService:
     """Build the auth service for this request."""
@@ -105,7 +110,11 @@ async def get_history_service(
     db: AsyncSession = Depends(get_db_session),
 ) -> HistoryService:
     """Build the history service for this request."""
-    return HistoryService(history_repo=SearchHistoryRepository(db))
+    return HistoryService(
+        history_repo=SearchHistoryRepository(db),
+        video_repo=VideoRepository(db),
+        search_service=SearchService(TranscriptWordRepository(db)),
+    )
 
 
 async def get_optional_identity(
@@ -222,6 +231,8 @@ def _to_user_response(user: User) -> AuthUserResponse:
         email=user.email,
         email_verified=user.email_verified_at is not None,
         created_at=user.created_at,
+        has_password=user.password_hash is not None,
+        full_name=user.full_name,
     )
 
 
@@ -400,6 +411,26 @@ async def request_password_reset(
 
 
 @router.post(
+    "/api/v1/auth/password-set",
+    status_code=status.HTTP_202_ACCEPTED,
+    responses={401: {"model": ErrorResponse, "description": "No valid session"}},
+)
+async def request_password_set(
+    identity: AuthIdentity = Depends(require_csrf),
+    auth_service: AuthService = Depends(get_auth_service),
+) -> None:
+    """Email the caller a link to choose a first password.
+
+    Takes no address in the body: the recipient is the session's own account,
+    so this cannot be turned into a way to mail a link to someone else.
+
+    Separate from ``/password-reset`` because that endpoint deliberately refuses
+    accounts with no password, which is exactly who needs this one.
+    """
+    await auth_service.request_password_set(user_id=identity.user.id)
+
+
+@router.post(
     "/api/v1/auth/password-reset/confirm",
     status_code=status.HTTP_204_NO_CONTENT,
     response_model=None,
@@ -415,6 +446,38 @@ async def confirm_password_reset(
     despite the permanent lockout.
     """
     await auth_service.confirm_password_reset(token=payload.token, password=payload.password)
+
+
+@router.post(
+    "/api/v1/auth/password-change",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
+    responses={
+        401: {"model": ErrorResponse, "description": "No valid session or wrong current password"},
+        403: {"model": ErrorResponse, "description": "CSRF token missing or incorrect"},
+    },
+)
+async def change_password(
+    payload: PasswordChangeRequest,
+    request: Request,
+    identity: AuthIdentity = Depends(require_csrf),
+    settings: Settings = Depends(get_settings),
+    auth_service: AuthService = Depends(get_auth_service),
+) -> None:
+    """Change the signed-in account's password without leaving the page.
+
+    Requires the current password even though the caller already holds a
+    session, and leaves this browser signed in while revoking the rest - the
+    emailed link at ``/password-reset`` remains the route for someone who has
+    forgotten the old one.
+    """
+    await auth_service.change_password(
+        user_id=identity.user.id,
+        session_id=identity.session_id,
+        current_password=payload.current_password,
+        new_password=payload.new_password,
+        ip=_client_ip(request, settings),
+    )
 
 
 # ── private history ────────────────────────────────────────────────

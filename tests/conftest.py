@@ -16,6 +16,9 @@ from sqlalchemy.pool import NullPool
 # fake/offline corpus.
 os.environ["LIVE_EXTERNAL_CALLS"] = "false"
 os.environ["TRANSCRIPT_MODE"] = "fake"
+# The CSRF secret is required: an unset one left every cookie-authenticated
+# mutation unsatisfiable, failing at the request instead of at boot.
+os.environ.setdefault("CSRF_TOKEN", "test-csrf-secret-0123456789")
 
 from app.core.config import get_settings  # noqa: E402
 from app.core.database import Base, get_db_session  # noqa: E402

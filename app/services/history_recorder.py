@@ -43,6 +43,10 @@ class SearchHistoryRecorder:
         status: str,
         locale: str | None = None,
         source: str | None = None,
+        progress_seconds: int | None = None,
+        video_title: str | None = None,
+        match_timestamps: list[int] | None = None,
+        match_results: list[dict[str, object]] | None = None,
     ) -> None:
         """Record the search, or do nothing at all.
 
@@ -63,6 +67,10 @@ class SearchHistoryRecorder:
                     status=status,
                     locale=locale,
                     source=source,
+                    progress_seconds=progress_seconds,
+                    video_title=video_title,
+                    match_timestamps=match_timestamps,
+                    match_results=match_results,
                 )
         except SQLAlchemyError:
             # Never fail the visitor's search over a history write.

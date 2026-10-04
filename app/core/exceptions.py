@@ -163,6 +163,21 @@ class AuthenticationFailedError(DomainError):
         super().__init__("Invalid email or password", code="INVALID_CREDENTIALS")
 
 
+class WrongCurrentPasswordError(DomainError):
+    """The password offered to replace an existing one is not the current one.
+
+    Distinct from :class:`AuthenticationFailedError` on purpose. That code is
+    deliberately vague because a sign-in must not reveal whether an address is
+    registered, but this endpoint is already authenticated as the account's owner
+    and can only ever be asked about *their own* password - so it discloses
+    nothing, and "that is not your current password" tells the visitor which of
+    the two boxes on the form was wrong.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("The current password is not correct", code="WRONG_CURRENT_PASSWORD")
+
+
 class AccountLockedError(DomainError):
     """The account exceeded the failed-login threshold and awaits an admin unlock."""
 
@@ -294,6 +309,7 @@ def _get_status_code(error_code: str) -> int:
         "EXTERNAL_SERVICE_ERROR": status.HTTP_502_BAD_GATEWAY,
         "DOMAIN_ERROR": status.HTTP_400_BAD_REQUEST,
         "INVALID_CREDENTIALS": status.HTTP_401_UNAUTHORIZED,
+        "WRONG_CURRENT_PASSWORD": status.HTTP_401_UNAUTHORIZED,
         "ACCOUNT_LOCKED": status.HTTP_423_LOCKED,
         "EMAIL_UNVERIFIED": status.HTTP_403_FORBIDDEN,
         "TOO_MANY_ATTEMPTS": status.HTTP_429_TOO_MANY_REQUESTS,
