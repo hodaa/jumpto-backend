@@ -106,7 +106,8 @@ class Base(DeclarativeBase):
 
 async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
     """Provide a database session for dependency injection, committing on success."""
-    async with _get_session_factory() as session:
+    session_factory = _get_session_factory()
+    async with session_factory() as session:
         try:
             yield session
             await session.commit()
@@ -120,7 +121,8 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
 @asynccontextmanager
 async def get_db_context() -> AsyncGenerator[AsyncSession, None]:
     """Provide a database session as a context manager, committing on success."""
-    async with _get_session_factory() as session:
+    session_factory = _get_session_factory()
+    async with session_factory() as session:
         try:
             yield session
             await session.commit()
