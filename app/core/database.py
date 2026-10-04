@@ -19,8 +19,6 @@ from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-settings = get_settings()
-
 _SSL_MODE_MAP: dict[str, ssl.VerifyMode | bool] = {
     "disable": False,
     "allow": False,
@@ -65,21 +63,39 @@ def _build_engine(database_url: str, echo: bool) -> AsyncEngine:
     return create_async_engine(async_url, **kwargs)
 
 
+# The engine and session factory are built lazily on first use rather than
+# at import time, so importing this module does not require the full
+# application settings. Alembic imports ``Base`` from here, and migrations
+# must be able to run without runtime secrets (such as CSRF_TOKEN) that
+# they never use.
+#
 # NullPool: every session gets a fresh connection tied to the current event
-# loop. This keeps forked Celery worker processes (which inherit the engine
-# from the API parent) free from cross-loop connection bugs.
-engine: AsyncEngine = _build_engine(
-    settings.database_url,
-    settings.is_development,
-)
+# loop. This keeps forked Celery worker processes free from cross-loop
+# connection bugs.
+_engine: AsyncEngine | None = None
+async_session_factory: async_sessionmaker[AsyncSession] | None = None
 
-# Create async session factory
-async_session_factory = async_sessionmaker(
-    engine,
-    class_=AsyncSession,
-    expire_on_commit=False,
-    autoflush=False,
-)
+
+def _get_engine() -> AsyncEngine:
+    """Return the shared engine, building it on first use."""
+    global _engine
+    if _engine is None:
+        settings = get_settings()
+        _engine = _build_engine(settings.database_url, settings.is_development)
+    return _engine
+
+
+def _get_session_factory() -> async_sessionmaker[AsyncSession]:
+    """Return the session factory, building it on first use."""
+    global async_session_factory
+    if async_session_factory is None:
+        async_session_factory = async_sessionmaker(
+            _get_engine(),
+            class_=AsyncSession,
+            expire_on_commit=False,
+            autoflush=False,
+        )
+    return async_session_factory
 
 
 class Base(DeclarativeBase):
@@ -90,7 +106,7 @@ class Base(DeclarativeBase):
 
 async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
     """Provide a database session for dependency injection, committing on success."""
-    async with async_session_factory() as session:
+    async with _get_session_factory() as session:
         try:
             yield session
             await session.commit()
@@ -104,7 +120,7 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
 @asynccontextmanager
 async def get_db_context() -> AsyncGenerator[AsyncSession, None]:
     """Provide a database session as a context manager, committing on success."""
-    async with async_session_factory() as session:
+    async with _get_session_factory() as session:
         try:
             yield session
             await session.commit()
@@ -119,7 +135,7 @@ async def init_db() -> None:
     """Initialize database connection."""
     logger.info("Initializing database connection")
     try:
-        async with engine.begin() as conn:
+        async with _get_engine().begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         logger.info("Database initialized successfully")
     except Exception as e:
@@ -130,4 +146,4 @@ async def init_db() -> None:
 async def close_db() -> None:
     """Close database connections."""
     logger.info("Closing database connections")
-    await engine.dispose()
+    await _get_engine().dispose()

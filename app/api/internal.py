@@ -23,8 +23,6 @@ from app.services import JobService
 
 router = APIRouter()
 
-_INTERNAL_API_KEY_HEADER = "x-internal-api-key"
-
 
 async def _verify_internal_api_key(
     x_internal_api_key: Annotated[str | None, Header()] = None,
