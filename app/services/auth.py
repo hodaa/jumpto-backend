@@ -42,6 +42,7 @@ from app.repositories.session_repository import (
 from app.repositories.video_repository import VideoRepository
 from app.services.email import SmtpEmailSender
 from app.services.google import GoogleIdentity, GoogleTokenVerifier
+from app.services.history_recorder import STATUS_PROCESSING
 from app.services.password import hash_password, verify_password
 from app.services.ports import AuthEmail
 from app.services.search import SearchService
@@ -496,6 +497,34 @@ class AuthService:
 MAX_RESULT_BACKFILLS = 20
 
 
+#: Extra rows fetched beyond the requested page size so that hiding unresolved
+#: rows does not quietly shrink the page. A user who searched several new videos
+#: in a row would otherwise see a short first page and an empty-looking history.
+HISTORY_PAGE_BUFFER = 20
+
+
+def _is_showable(entry: SearchHistory) -> bool:
+    """Whether a history row has anything worth putting in front of the user.
+
+    A search of a video we have never seen is filed the moment its transcription
+    is queued, so it starts with no results to replay and no position to seek to.
+    Until the transcript lands there is nothing to show but a bare keyword, so
+    those rows stay out of the page and appear once the results arrive.
+
+    ``status`` alone cannot decide this: a queued row is never rewritten when its
+    job finishes (see ``routes.py``), so ``processing`` describes how the row was
+    filed, not what it now holds. Nor can "has no results" decide it, because a
+    genuine miss is recorded the same way - ``routes.py`` files ``not_found``
+    with no match list either. What separates them is the pairing: a row is only
+    hidden while it is still labelled processing *and* still has nothing to show.
+    Once the backfill fills it, or a search genuinely matched nothing, it is
+    listed as usual.
+    """
+    if entry.status != STATUS_PROCESSING:
+        return True
+    return bool(entry.match_results)
+
+
 class HistoryService:
     """Read and delete the caller's own history."""
 
@@ -539,11 +568,19 @@ class HistoryService:
         limit: int = 20,
         cursor: str | None = None,
     ) -> list:
-        entries = await self.history_repo.list_for_user(
-            user_id=user_id, limit=limit, cursor=cursor
+        """Return one page of history, without the rows that have nothing to show.
+
+        Rows are hidden only after recovery has run, so a search whose transcript
+        landed since the last visit is listed on the very first page load instead
+        of one load later. The page is over-fetched and then trimmed because
+        hiding rows shrinks what a ``limit``-sized fetch returns, and the
+        controller reads the page length to decide whether more exist.
+        """
+        batch = await self.history_repo.list_for_user(
+            user_id=user_id, limit=limit + HISTORY_PAGE_BUFFER, cursor=cursor
         )
-        await self._recover_missing_results(entries)
-        return entries
+        await self._recover_missing_results(batch)
+        return [entry for entry in batch if _is_showable(entry)][:limit]
 
     async def _recover_missing_results(self, entries: list[SearchHistory]) -> None:
         """Recover stored results for rows that were filed before they existed.

@@ -903,7 +903,9 @@ class TestHistoryEndpoint:
                 user_id=user.id,
                 video_id="abc123",
                 keyword="brain",
+                # Filed before the transcript existed, so no title was captured.
                 status="processing",
+                match_results=[{"progress_seconds": 754.0}],
                 video_title=None,
             )
         )
@@ -1097,10 +1099,16 @@ class TestHistoryEndpoint:
             "progress_seconds"
         ] == 12
 
-    async def test_a_video_that_was_never_transcribed_keeps_its_unknown_position(
+    async def test_a_video_that_was_never_transcribed_is_not_listed(
         self, auth_client, sender, db_session
     ) -> None:  # noqa: ANN001
-        """No transcript means no match to recover, and NULL says so honestly."""
+        """A transcription that never finishes leaves nothing to show, so no row.
+
+        The row is still recorded - the search happened - but with no transcript
+        there is no match to recover and no position to replay, so it never
+        becomes listable. It is not a search that matched nothing, which does get
+        listed; it is a search whose result is still unknown.
+        """
         from sqlalchemy import select
 
         from app.models import SearchHistory, User, Video
@@ -1121,9 +1129,121 @@ class TestHistoryEndpoint:
         )
         await db_session.flush()
 
-        assert (await auth_client.get("/api/v1/history")).json()["entries"][0][
-            "progress_seconds"
-        ] is None
+        assert (await auth_client.get("/api/v1/history")).json()["entries"] == []
+
+    async def test_a_search_that_matched_nothing_is_still_listed(
+        self, auth_client, sender, db_session
+    ) -> None:  # noqa: ANN001
+        """"No results" must not mean "hidden": a real miss is a real answer.
+
+        A search that ran and found nothing is recorded the same shape as one
+        still waiting on its transcript - no match list either. If hiding
+        unresolved rows looked only at the missing results, every genuine miss
+        would vanish from history and the user could never see that a term was
+        absent from a video. The status is what separates the two.
+        """
+        from sqlalchemy import select
+
+        from app.models import SearchHistory, User
+
+        await self._sign_in(auth_client, sender)
+        user = await db_session.scalar(select(User).where(User.email == "hist@example.com"))
+        db_session.add(
+            SearchHistory(
+                user_id=user.id,
+                video_id="abc123",
+                keyword="brain",
+                status="not_found",
+            )
+        )
+        await db_session.flush()
+
+        entries = (await auth_client.get("/api/v1/history")).json()["entries"]
+        assert [e["keyword"] for e in entries] == ["brain"]
+
+    async def test_a_queued_search_appears_once_its_results_land(
+        self, auth_client, sender, db_session
+    ) -> None:  # noqa: ANN001
+        """Hiding is not permanent: the row returns as soon as it has something.
+
+        The row is only ever labelled ``processing`` - nothing rewrites it when
+        the job finishes - so a hidden row must come back on the strength of its
+        stored results, not on a status change that never happens.
+        """
+        from sqlalchemy import select
+
+        from app.models import SearchHistory, User
+
+        await self._sign_in(auth_client, sender)
+        user = await db_session.scalar(select(User).where(User.email == "hist@example.com"))
+        db_session.add(
+            SearchHistory(
+                user_id=user.id,
+                video_id="abc123",
+                keyword="brain",
+                status="processing",
+                match_results=[{"progress_seconds": 754.0}],
+            )
+        )
+        await db_session.flush()
+
+        entries = (await auth_client.get("/api/v1/history")).json()["entries"]
+        assert [e["keyword"] for e in entries] == ["brain"]
+
+    async def test_hiding_unresolved_rows_does_not_shorten_the_page(
+        self, auth_client, sender, db_session
+    ) -> None:  # noqa: ANN001
+        """A page of real searches is still a full page once noise is dropped.
+
+        The controller decides whether more history exists by comparing the
+        returned count to the requested limit, so hiding rows after a
+        limit-sized fetch would report the end of history early and strand
+        older entries behind a cursor nobody follows.
+        """
+        from sqlalchemy import select
+
+        from app.models import SearchHistory, User
+
+        await self._sign_in(auth_client, sender)
+        user = await db_session.scalar(select(User).where(User.email == "hist@example.com"))
+        base = datetime.now(UTC) - timedelta(hours=2)
+        rows = [
+            # Newest first: five queued-and-unresolved rows sit above the real
+            # ones, so a filter that did not over-fetch would return short.
+            SearchHistory(
+                user_id=user.id,
+                video_id=f"pending{i}",
+                keyword=f"pending{i}",
+                status="processing",
+                created_at=base + timedelta(hours=1, minutes=i),
+            )
+            for i in range(5)
+        ]
+        rows += [
+            SearchHistory(
+                user_id=user.id,
+                video_id=f"real{i}",
+                keyword=f"real{i}",
+                status="found",
+                match_results=[{"progress_seconds": 10.0}],
+                # Descending, so newest-first ordering reads real0..real4.
+                created_at=base - timedelta(minutes=i),
+            )
+            for i in range(5)
+        ]
+        db_session.add_all(rows)
+        await db_session.flush()
+
+        response = await auth_client.get("/api/v1/history", params={"limit": 5})
+        body = response.json()
+        assert [e["keyword"] for e in body["entries"]] == [
+            "real0",
+            "real1",
+            "real2",
+            "real3",
+            "real4",
+        ]
+        assert body["next_cursor"] is not None
 
     async def test_a_search_with_no_position_reports_null_not_zero(
         self, auth_client, sender, db_session
@@ -1247,13 +1367,21 @@ class TestSearchRecordsHistory:
         assert row.locale == "ar-sa"
         assert row.source == "unit-test"
 
-    async def test_it_appears_in_the_history_endpoint(self, auth_client, sender) -> None:  # noqa: ANN001
+    async def test_it_is_recorded_but_not_listed_while_it_has_nothing_to_show(
+        self, auth_client, sender
+    ) -> None:  # noqa: ANN001
+        """A queued search is filed, but stays out of the page until it resolves.
+
+        The row is written the moment the transcription is queued, so it has no
+        results and no position to replay. Listing it then showed a bare keyword
+        with nothing to open, so it is hidden while unresolved - the search is
+        still recorded, and appears as soon as the transcript lands.
+        """
         await self._sign_in(auth_client, sender, "listed@example.com")
         await self._search(auth_client, keyword="rick astley")
 
         history = await auth_client.get("/api/v1/history")
-        entries = history.json()["entries"]
-        assert [e["keyword"] for e in entries] == ["rick astley"]
+        assert history.json()["entries"] == []
 
     async def test_a_search_is_not_attributed_to_another_account(
         self, auth_client, sender, db_session
